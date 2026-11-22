@@ -48,3 +48,5 @@ grid-raw/
 **/champion-map*
 **/champion-to-card*
 **/riot-map*
+
+!.env.production

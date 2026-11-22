@@ -17,7 +17,7 @@
   "vars": {
     // Paste your Google OAuth Web client ID here (same value as VITE_GOOGLE_CLIENT_ID). Empty = guest only.
     "GOOGLE_CLIENT_ID": "",
-    "ALLOWED_ORIGINS": ""
+    "ALLOWED_ORIGINS": "https://veil-lane.jayren1121.workers.dev"
   },
   "observability": { "enabled": true }
 }
