@@ -1,0 +1,23 @@
+{
+  // Veil Lane online backend (Cloudflare Workers free plan, no credit card needed).
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "veil-lane-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "MATCH_ROOM", "class_name": "MatchRoom" },
+      { "name": "ACCOUNTS", "class_name": "Accounts" }
+    ]
+  },
+  // The free plan only supports SQLite-backed Durable Objects.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MatchRoom", "Accounts"] }
+  ],
+  "vars": {
+    // Paste your Google OAuth Web client ID here (same value as VITE_GOOGLE_CLIENT_ID). Empty = guest only.
+    "GOOGLE_CLIENT_ID": "",
+    "ALLOWED_ORIGINS": ""
+  },
+  "observability": { "enabled": true }
+}

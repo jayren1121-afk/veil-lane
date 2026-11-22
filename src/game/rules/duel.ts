@@ -1,0 +1,305 @@
+import { Card, Lane, Placement, TeamScore, LaneMatchupDetail, SynergyDetail, RoundResult, Player, LaneRevealResult, LANE_ORDER } from './types';
+import { getMatchup } from '../data/matchups';
+import { getSynergy } from '../data/synergies';
+import { getLaneWinRate } from '../data/cards';
+import { ALPHA, BETA, K, ORDER_BONUS, WIN_RATE_TIE_EPSILON } from './constants';
+import { computeTeamSynergy } from './synergy';
+
+/**
+ * Logit function: ln(p / (1 - p))
+ * Clamps p to [1e-10, 1 - 1e-10] to avoid log(0).
+ */
+export function logit(p: number): number {
+  const clamped = Math.max(1e-10, Math.min(1 - 1e-10, p));
+  return Math.log(clamped / (1 - clamped));
+}
+
+/**
+ * Logistic (sigmoid) function: 1 / (1 + e^-x)
+ */
+export function logistic(x: number): number {
+  return 1 / (1 + Math.exp(-x));
+}
+
+/**
+ * Compute Bayesian shrinkage win rate for card A vs card B in a lane.
+ *
+ * Formula from PLAN.md section 3.5:
+ *   p0 = 0.5 * (WR(A in lane) + 1 - WR(B in lane))
+ *   p^mu = (w + k * p0) / (n + k)
+ *
+ * where w/n is the raw A-wins / total for A vs B in this lane.
+ * If no direct matchup data exists, n=0 and p = p0.
+ */
+export function computeShrinkageWinRate(
+  cardA: Card,
+  cardB: Card,
+  lane: Lane
+): { winRate: number; rawWins: number; rawTotal: number; prior: number } {
+  // A mirror matchup (both sides picked the same card) is a 50-50.
+  if (cardA.id === cardB.id) {
+    return { winRate: 0.5, rawWins: 0, rawTotal: 0, prior: 0.5 };
+  }
+
+  const matchup = getMatchup(cardA.id, cardB.id, lane);
+
+  // Prior: blend A's lane win rate and B's lane win rate (inverted)
+  const p0 = 0.5 * (getLaneWinRate(cardA, lane) + (1 - getLaneWinRate(cardB, lane)));
+
+  if (!matchup || matchup.total === 0) {
+    return {
+      winRate: p0,
+      rawWins: 0,
+      rawTotal: 0,
+      prior: p0,
+    };
+  }
+
+  const w = matchup.winsA;
+  const n = matchup.total;
+
+  // Bayesian shrinkage
+  const p = (w + K * p0) / (n + K);
+
+  return {
+    winRate: p,
+    rawWins: w,
+    rawTotal: n,
+    prior: p0,
+  };
+}
+
+/**
+ * Compute synergy delta for a pair of teammates.
+ *
+ * Formula from PLAN.md section 3.6:
+ *   p^exp = 0.5 * (p^base_i + p^base_j)
+ *   p^pair = (w + k * p^exp) / (n + k)
+ *   delta^syn = logit(p^pair) - logit(p^exp)
+ *
+ * If no synergy data (n=0), delta = 0.
+ */
+export function computeSynergyDelta(
+  cardA: Card,
+  laneA: Lane,
+  cardB: Card,
+  laneB: Lane
+): { deltaSyn: number; pPair: number; pExp: number; rawWins: number; rawTotal: number } {
+  const synergy = getSynergy(cardA.id, laneA, cardB.id, laneB);
+
+  // Expected pair win rate: average of two base rates
+  const pExp = 0.5 * (getLaneWinRate(cardA, laneA) + getLaneWinRate(cardB, laneB));
+
+  if (!synergy || synergy.total === 0) {
+    // No data — delta is 0
+    return { deltaSyn: 0, pPair: pExp, pExp, rawWins: 0, rawTotal: 0 };
+  }
+
+  const w = synergy.wins;
+  const n = synergy.total;
+
+  // Bayesian shrinkage for pair
+  const pPair = (w + K * pExp) / (n + K);
+
+  // Delta on logit scale
+  const deltaSyn = logit(pPair) - logit(pExp);
+
+  return { deltaSyn, pPair, pExp, rawWins: w, rawTotal: n };
+}
+
+/**
+ * Compute team score (three layers on logit scale) for a team of 5 placements.
+ *
+ * Formula from PLAN.md section 3.7:
+ *   s = (1/5) * sum(logit(p^base_i))
+ *     + alpha * (1/5) * sum(logit(p^mu_i) - logit(p^base_i))
+ *     + beta * (1/10) * sum(delta^syn_ij)
+ */
+export function computeTeamScore(
+  placements: Placement[],
+  opponentPlacements: Placement[]
+): { teamScore: TeamScore; laneDetails: LaneMatchupDetail[]; synergies: SynergyDetail[] } {
+  // Build opponent lookup by lane
+  const oppByLane = new Map<Lane, Card>();
+  for (const p of opponentPlacements) {
+    oppByLane.set(p.lane, p.card);
+  }
+
+  // Layer 1: Base logit
+  let baseSum = 0;
+  // Layer 2: Matchup delta logit
+  let matchupDeltaSum = 0;
+  const laneDetails: LaneMatchupDetail[] = [];
+
+  for (const p of placements) {
+    const card = p.card;
+    const oppCard = oppByLane.get(p.lane);
+    const baseLogit = logit(getLaneWinRate(card, p.lane));
+    baseSum += baseLogit;
+
+    if (oppCard) {
+      const shrinkage = computeShrinkageWinRate(card, oppCard, p.lane);
+      const muLogit = logit(shrinkage.winRate);
+      const delta = muLogit - baseLogit;
+      matchupDeltaSum += delta;
+
+      // Also compute opponent's shrinkage for this lane
+      const oppShrinkage = computeShrinkageWinRate(oppCard, card, p.lane);
+
+      laneDetails.push({
+        lane: p.lane,
+        p1Card: card,
+        p2Card: oppCard,
+        p1BaseLogit: baseLogit,
+        p2BaseLogit: logit(getLaneWinRate(oppCard, p.lane)),
+        p1MuLogit: muLogit,
+        p2MuLogit: logit(oppShrinkage.winRate),
+        matchupDelta: delta,
+        rawWins: shrinkage.rawWins,
+        rawTotal: shrinkage.rawTotal,
+      });
+    } else {
+      matchupDeltaSum += 0;
+    }
+  }
+
+  // Layer 3: Synergy (all 10 pairs)
+  const synergies: SynergyDetail[] = [];
+  let synergySum = 0;
+
+  for (let i = 0; i < placements.length; i++) {
+    for (let j = i + 1; j < placements.length; j++) {
+      const pi = placements[i];
+      const pj = placements[j];
+      const result = computeSynergyDelta(pi.card, pi.lane, pj.card, pj.lane);
+      synergySum += result.deltaSyn;
+      synergies.push({
+        cardA: pi.card,
+        cardB: pj.card,
+        laneA: pi.lane,
+        laneB: pj.lane,
+        deltaSyn: result.deltaSyn,
+        pPair: result.pPair,
+        pExp: result.pExp,
+        rawWins: result.rawWins,
+        rawTotal: result.rawTotal,
+      });
+    }
+  }
+
+  const n = placements.length; // should be 5
+  const nPairs = (n * (n - 1)) / 2; // should be 10
+
+  const baseLogit = baseSum / n;
+  const matchupLogit = matchupDeltaSum / n;
+  const synergyLogit = synergySum / nPairs;
+  const totalLogit = baseLogit + ALPHA * matchupLogit + BETA * synergyLogit;
+
+  const teamScore: TeamScore = {
+    baseLogit,
+    matchupLogit,
+    synergyLogit,
+    totalLogit,
+  };
+
+  return { teamScore, laneDetails, synergies };
+}
+
+/**
+ * Resolve a single lane duel: compute matchup win rate for one lane.
+ * Returns the lane winner based on matchup-only win rate (no synergy).
+ */
+export function resolveLaneDuel(
+  p1Card: Card,
+  p2Card: Card,
+  lane: Lane,
+  orderIndex = 0
+): LaneRevealResult {
+  const p1Shrinkage = computeShrinkageWinRate(p1Card, p2Card, lane);
+  const p2Shrinkage = computeShrinkageWinRate(p2Card, p1Card, lane);
+
+  const p1WinRate = p1Shrinkage.winRate;
+  const p2WinRate = p2Shrinkage.winRate;
+
+  const p1BaseLogit = logit(getLaneWinRate(p1Card, lane));
+  const p1MuLogit = logit(p1Shrinkage.winRate);
+  const matchupDelta = p1MuLogit - p1BaseLogit;
+
+  const orderBonus = (ORDER_BONUS[orderIndex] ?? 0) / 100;
+  const p1Total = p1WinRate + orderBonus;
+  const p2Total = p2WinRate + orderBonus;
+
+  let laneWinner: Player | null = null;
+  if (p1Total > p2Total) {
+    laneWinner = Player.P1;
+  } else if (p2Total > p1Total) {
+    laneWinner = Player.P2;
+  }
+
+  return {
+    lane,
+    p1Card,
+    p2Card,
+    p1WinRate,
+    p2WinRate,
+    matchupDelta,
+    orderIndex,
+    orderBonus,
+    p1Total,
+    p2Total,
+    laneWinner,
+  };
+}
+
+/**
+ * Resolve a full round: compute both team scores and determine winner.
+ *
+ * Round winner is determined by majority lane wins (5 lanes, need 3 to win).
+ * Synergies are computed after all lanes are revealed for display purposes.
+ */
+export function resolveRoundScores(
+  p1Placements: Placement[],
+  p2Placements: Placement[],
+  revealOrder: Lane[] = LANE_ORDER,
+  firstPlayer: Player = Player.P1
+): RoundResult {
+  // Compute per-lane duel results in the order selected by the first player.
+  const laneResults: LaneRevealResult[] = [];
+
+  for (let orderIndex = 0; orderIndex < revealOrder.length; orderIndex++) {
+    const lane = revealOrder[orderIndex];
+    const p1Place = p1Placements.find(p => p.lane === lane);
+    const p2Place = p2Placements.find(p => p.lane === lane);
+    if (!p1Place || !p2Place) continue;
+
+    const laneResult = resolveLaneDuel(p1Place.card, p2Place.card, lane, orderIndex);
+    laneResults.push(laneResult);
+  }
+
+  const laneCount = laneResults.length || 1;
+  const p1MatchupAvg = laneResults.reduce((sum, result) => sum + result.p1WinRate, 0) / laneCount;
+  const p2MatchupAvg = laneResults.reduce((sum, result) => sum + result.p2WinRate, 0) / laneCount;
+  const orderBonusAvg = laneResults.reduce((sum, result) => sum + result.orderBonus, 0) / laneCount;
+  const p1Synergy = computeTeamSynergy(p1Placements);
+  const p2Synergy = computeTeamSynergy(p2Placements);
+  const p1WinRate = p1MatchupAvg + orderBonusAvg + p1Synergy.bonus;
+  const p2WinRate = p2MatchupAvg + orderBonusAvg + p2Synergy.bonus;
+
+  let roundWinner: Player | null = null;
+  if (p1WinRate - p2WinRate > WIN_RATE_TIE_EPSILON) roundWinner = Player.P1;
+  else if (p2WinRate - p1WinRate > WIN_RATE_TIE_EPSILON) roundWinner = Player.P2;
+
+  return {
+    firstPlayer,
+    revealOrder: laneResults.map(result => result.lane),
+    laneResults,
+    p1MatchupAvg,
+    p2MatchupAvg,
+    orderBonusAvg,
+    p1Synergy,
+    p2Synergy,
+    p1WinRate,
+    p2WinRate,
+    roundWinner,
+  };
+}

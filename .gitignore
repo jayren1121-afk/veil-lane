@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Env and secrets (keep the example)
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# Cloudflare Workers local state (Durable Object SQLite, caches, traces)
+.wrangler
+worker/.wrangler
+**/.wrangler/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Internal design notes that contain Riot champion names and mapping discussion
+PLAN.md
+
+# Raw GRID extracts and champion-to-card mapping (must never be committed)
+grid/
+grid-raw/
+/tmp/grid/
+**/champion-map*
+**/champion-to-card*
+**/riot-map*
