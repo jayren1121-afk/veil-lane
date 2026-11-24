@@ -37,6 +37,10 @@ function seatedMatch(now = 0, seed = 7) {
 function allowedIds(match: OnlineMatch, viewer: Player): Set<string> {
   const play = match.data.play!;
   const ids = new Set<string>([...play.hands[viewer].flat(), ...play.played[viewer], ...match.data[viewer === Player.P1 ? 'p1UsedCardIds' : 'p2UsedCardIds']]);
+  // Open candidates: the opponent's two cards for the current lane are public (their pick is not).
+  if (match.data.phase === 'battle' && play.laneIndex < LANE_ORDER.length) {
+    for (const id of play.hands[otherPlayer(viewer)][play.laneIndex] ?? []) ids.add(id);
+  }
   for (const result of play.results) {
     ids.add(result.p1Card.id);
     ids.add(result.p2Card.id);
@@ -58,6 +62,11 @@ function expectNoLeak(match: OnlineMatch, viewer: Player, now: number): number {
     expect(serialized).not.toContain(`"${id}"`);
     checks++;
   }
+  // The opponent's pick must not be readable: no main / partner fields, and only the two candidates of this lane.
+  const battle = match.viewFor(viewer, now).battle!;
+  expect(battle).not.toHaveProperty('opponentMain');
+  expect(battle).not.toHaveProperty('opponentPartner');
+  expect(battle.opponentCandidates).toEqual(play.laneIndex < LANE_ORDER.length ? play.hands[opponent][play.laneIndex] : []);
   return checks;
 }
 
@@ -379,5 +388,51 @@ describe('leaving a room', () => {
   it('a normal finish has no forfeit', () => {
     const { match } = seatedMatch(0, 14);
     expect(match.viewFor(Player.P1, 0).forfeitedBy).toBeNull();
+  });
+});
+
+describe('open candidates', () => {
+  it("shows the opponent's two current-lane candidates and nothing else of their hand", () => {
+    const { match } = seatedMatch(0, 21);
+    const now = FIRST_ROUND_INTRO_MS;
+    const play = match.data.play!;
+    const view = match.viewFor(Player.P1, now).battle!;
+    expect(view.opponentCandidates).toEqual(play.hands[Player.P2][0]);
+    expect(view.opponentCandidates).toHaveLength(2);
+    const json = JSON.stringify(match.viewFor(Player.P1, now));
+    const mine = new Set(play.hands[Player.P1].flat());
+    for (const id of play.hands[Player.P2].slice(1).flat()) if (!mine.has(id)) expect(json).not.toContain(`"${id}"`);
+    playLane(match, now);
+    expect(match.viewFor(Player.P1, now + 10).battle!.opponentCandidates).toEqual(play.hands[Player.P2][1]);
+  });
+
+  it("the view is identical whichever candidate the opponent picked (pick stays hidden until the flip)", () => {
+    for (let seed = 30; seed < 60; seed++) {
+      const a = seatedMatch(0, seed).match;
+      const b = seatedMatch(0, seed).match;
+      const now = FIRST_ROUND_INTRO_MS;
+      const offer = a.data.play!.hands[Player.P2][0];
+      expect(a.pick(Player.P2, offer[0], now)).toBeNull();
+      expect(b.pick(Player.P2, offer[1], now)).toBeNull();
+      // Settle any partner choice the same way so only the main card differs.
+      for (const m of [a, b]) {
+        const v = m.viewFor(Player.P2, now).battle!;
+        if (v.needPartner) m.partner(Player.P2, v.myPartnerOptions[0], now);
+      }
+      const viewA = a.viewFor(Player.P1, now).battle!;
+      const viewB = b.viewFor(Player.P1, now).battle!;
+      expect(JSON.stringify(viewA)).toBe(JSON.stringify(viewB));
+      expect(viewA.opponentLocked).toBe(true);
+    }
+  });
+
+  it('candidates are empty outside a live lane', () => {
+    const { match } = seatedMatch(0, 22);
+    let now = FIRST_ROUND_INTRO_MS;
+    while (match.data.phase === 'battle') {
+      playLane(match, now);
+      now += 1000;
+    }
+    expect(match.viewFor(Player.P1, now).battle!.opponentCandidates).toEqual([]);
   });
 });

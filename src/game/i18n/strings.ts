@@ -13,8 +13,8 @@ export const STRINGS = {
     en: "Each round you get a 10-card hand: 2 random cards for each of Top, Jungle, Mid, Bot and Support, visible all round. Lanes are played in order; each lane you play 1 of that lane's 2 cards as your MAIN card.",
   },
   'tutorial.page1.line2': {
-    zh: '接著從手牌其他卡（別路的、出過或沒出過都可以）選 1 張配合卡。每路限時 {seconds} 秒（主卡＋配合一起算），時間到隨機出主卡、自動選加分最高的配合。對手（線上玩家或電腦）的手牌和選擇翻開前都看不到。',
-    en: "Then pick 1 synergy partner from the rest of your hand (other lanes, played or not). {seconds} seconds per lane covers both picks; on time-out a random main card and the best partner are chosen. Your opponent's hand and picks (online player or CPU) stay hidden until the flip.",
+    zh: '接著從手牌其他卡（別路的、出過或沒出過都可以）選 1 張配合卡。每路限時 {seconds} 秒（主卡＋配合一起算），時間到隨機出主卡、自動選加分最高的配合。對手的其他手牌和他選哪張，翻開前都看不到。',
+    en: "Then pick 1 synergy partner from the rest of your hand (other lanes, played or not). {seconds} seconds per lane covers both picks; on time-out a random main card and the best partner are chosen. The rest of your opponent's hand and which card they pick stay hidden until the flip.",
   },
   'tutorial.page2.title': { zh: '開牌', en: 'REVEAL' },
   'tutorial.page2.line1': {
@@ -22,8 +22,8 @@ export const STRINGS = {
     en: 'A coin toss decides who goes first in Round 1; players alternate afterward.',
   },
   'tutorial.page2.line2': {
-    zh: '雙方主卡蓋牌放下後同時翻開，接著各自的配合卡飛入加分，最後顯示該路勝負。',
-    en: "Both main cards go down face-down and flip together; then each side's partner flies in and adds its bonus, and the lane winner is shown.",
+    zh: '心理戰：每路都看得到對手這路的 2 張候選卡（A、B），但看不到他選哪張。你的卡上方顯示「對 A／對 B」的對線勝率，猜他出哪張、出剋制它的卡——他也在猜你。主卡蓋牌後同時翻開，配合卡飛入加分，顯示勝負。',
+    en: "Mind game: each lane you see your opponent's 2 candidates (A, B) but not which one they pick. Labels above your cards show their win rate vs A / vs B. Guess their card and play the counter, while they try to guess yours. Mains flip together, partners fly in, and the lane winner is shown.",
   },
   'tutorial.page3.title': { zh: '計分', en: 'SCORING' },
   'tutorial.page3.line1': {
@@ -71,8 +71,8 @@ export const STRINGS = {
   'game.orderBonus': { zh: '本路順序加成：雙方 +{bonus}%', en: 'ORDER BONUS THIS LANE: BOTH +{bonus}%' },
   'game.pickPrompt': { zh: '{player}：選 {lane} 的主卡（二選一）', en: '{player}: PICK YOUR MAIN CARD FOR {lane} (1 OF 2)' },
   'game.pickHint': {
-    zh: '滑過這路的卡，手牌中能配合的卡會亮金光（數字＝加分）。配合不疊加，只算一張。',
-    en: 'HOVER A CARD: HAND CARDS THAT WOULD PARTNER IT GLOW GOLD (NUMBER = BONUS). SYNERGY DOES NOT STACK: ONE PARTNER ONLY.',
+    zh: '猜對手出 A 還是 B：卡片上方是對 A／對 B 的勝率。滑過卡片，能配合的卡亮金光（只算一張）。',
+    en: 'GUESS A OR B: LABELS SHOW YOUR WIN RATE VS EACH. HOVER A CARD: PARTNERS GLOW GOLD (ONE ONLY).',
   },
   'game.partnerPrompt': { zh: '{player}：為 {card} 選一張配合卡', en: '{player}: CHOOSE ONE PARTNER FOR {card}' },
   'game.partnerHint': {
@@ -103,6 +103,9 @@ export const STRINGS = {
   'game.opponentLocked': { zh: '{name} 已出牌', en: '{name} HAS LOCKED IN' },
   'game.opponentThinking': { zh: '{name} 思考中…', en: '{name} IS CHOOSING…' },
   'game.you': { zh: '你', en: 'YOU' },
+  'game.oppCandidates': { zh: '{name} 的候選（猜他出哪張）', en: "{name}'S OPTIONS (GUESS WHICH)" },
+  'game.vsLine': { zh: '對 {letter} {rate}%', en: 'vs {letter} {rate}%' },
+  'game.oppPlayed': { zh: '出了這張', en: 'PLAYED' },
   'common.back': { zh: '← 返回', en: '← BACK' },
   'leave.title': { zh: '確定離開？', en: 'LEAVE?' },
   'leave.body': { zh: '對手會獲勝', en: 'Your opponent wins.' },

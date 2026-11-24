@@ -72,7 +72,9 @@ function assertNoLeak() {
     if (!st?.battle || !otherSt?.battle || st.phase !== 'battle' || otherSt.phase !== 'battle') continue;
     if (st.round !== otherSt.round || st.battle.laneIndex !== otherSt.battle.laneIndex) continue;
     const json = JSON.stringify(st);
-    const allowed = new Set([...st.battle.myHand.flat(), ...Object.values(st.battle.myCards), ...st.usedCardIds]);
+    const allowed = new Set([...st.battle.myHand.flat(), ...Object.values(st.battle.myCards), ...st.usedCardIds, ...(st.battle.opponentCandidates ?? [])]);
+    if (st.battle.currentLane && JSON.stringify(st.battle.opponentCandidates) !== JSON.stringify(otherSt.battle.myHand[otherSt.battle.laneIndex])) fail(`candidates mismatch for ${cl.you}`);
+    if ("opponentMain" in st.battle || "opponentPartner" in st.battle) fail("opponent pick fields sent");
     for (const r of st.battle.revealed) {
       allowed.add(r.p1Card.id);
       allowed.add(r.p2Card.id);

@@ -33,6 +33,7 @@ import {
   cpuThinkDelay,
 } from '../rules';
 import { CARDS, getLaneWinRate } from '../data/cards';
+import { laneMatchupWinRate } from '../rules/duel';
 import { CARD_BACK_KEY, cardArtPath, cardBackPath } from '../data/art';
 import { t } from '../i18n';
 import { addBackButton, confirmDialog, showOpponentLeft } from './sceneNav';
@@ -60,6 +61,11 @@ const DOCK_X = BOARD_X - SLOT_W / 2 - 66;
 const NAME_X = 230;
 const STRIP_X = 740;
 const STRIP_GAP = 30;
+/** The opponent's two open candidates for the current lane, top right of the table. */
+const CAND_X = [768, 852];
+const CAND_W = 72;
+const CAND_H = 96;
+const CAND_LETTERS = ['A', 'B'];
 const LANE_KEYS = {
   [Lane.Top]: 'lane.top', [Lane.Jungle]: 'lane.jungle', [Lane.Mid]: 'lane.mid', [Lane.Bot]: 'lane.bot', [Lane.Support]: 'lane.support',
 } as const;
@@ -136,6 +142,11 @@ export class GameScene extends Phaser.Scene {
   private laneTitleBox!: Phaser.GameObjects.Rectangle;
   private stripDots: Phaser.GameObjects.Arc[] = [];
   private stripText!: Phaser.GameObjects.Text;
+  /** Opponent's open candidates for the current lane (face up; their pick stays hidden). */
+  private candIds: string[] = [];
+  private candKey = '';
+  private candObjects: Phaser.GameObjects.GameObject[] = [];
+  private candViews: CardView[] = [];
   /** Objects shown for the lane being resolved (WIN tags, docked partners); swept away afterwards. */
   private laneFx: Phaser.GameObjects.GameObject[] = [];
   private handObjects: Phaser.GameObjects.GameObject[] = [];
@@ -190,6 +201,10 @@ export class GameScene extends Phaser.Scene {
     this.scoreTexts = new Map();
     this.stripDots = [];
     this.laneFx = [];
+    this.candIds = [];
+    this.candKey = '';
+    this.candObjects = [];
+    this.candViews = [];
     this.handObjects = [];
     this.handCards = [];
     this.glowObjects = [];
@@ -585,7 +600,8 @@ export class GameScene extends Phaser.Scene {
     if (!view.info.active) return;
     const card = cardById(view.id);
     const lane = LANE_ORDER[view.laneIndex];
-    const lines = [t('game.infoWinRate', { rate: card && lane ? (getLaneWinRate(card, lane) * 100).toFixed(1) : '-' })];
+    const vs = view.current && card && lane ? this.vsLines(card, lane) : [];
+    const lines = vs.length > 0 ? vs : [t('game.infoWinRate', { rate: card && lane ? (getLaneWinRate(card, lane) * 100).toFixed(1) : '-' })];
     let color: string = COLORS.text;
     let background: string = '#0b1c2ee6';
     if (bonus !== null) {
@@ -606,6 +622,63 @@ export class GameScene extends Phaser.Scene {
     view.info.setText(lines.join('\n')).setColor(color).setBackgroundColor(background);
   }
 
+  /** "vs A 58%" / "vs B 44%": this card's matchup win rate against each open candidate. */
+  private vsLines(card: Card, lane: Lane): string[] {
+    return this.candIds.map((id, index) => {
+      const foe = cardById(id);
+      if (!foe) return '';
+      const rate = Math.round(laneMatchupWinRate(card, foe, lane) * 100);
+      return t('game.vsLine', { letter: CAND_LETTERS[index] ?? '?', rate });
+    }).filter(Boolean);
+  }
+
+  /** Show the opponent's open candidates for this lane (A, B). Their actual pick stays hidden. */
+  private renderCandidates(ids: string[], key: string) {
+    if (this.candKey === key) return;
+    this.candKey = key;
+    this.candIds = [...ids];
+    this.candObjects.forEach(object => object.destroy());
+    this.candObjects = [];
+    this.candViews = [];
+    const lane = LANE_ORDER[this.laneIndexNow()];
+    if (ids.length === 0 || !lane) return;
+    const caption = this.add.text((CAND_X[0] + CAND_X[1]) / 2, TOP_Y - CAND_H / 2 - 16, t('game.oppCandidates', { name: this.label(otherPlayer(this.bottomPlayer)) }), {
+      fontSize: '12px', fontFamily: 'Arial', color: COLORS.muted, fontStyle: 'bold', align: 'center',
+    }).setOrigin(0.5).setDepth(12);
+    this.candObjects.push(caption);
+    ids.forEach((id, index) => {
+      const card = cardById(id);
+      if (!card) return;
+      const face = createCardFace(this, card, lane, CAND_W, CAND_H, { nameFontSize: '8px' });
+      face.container.setPosition(CAND_X[index], TOP_Y).setDepth(12);
+      face.container.add(this.add.text(-CAND_W / 2 + 2, -CAND_H / 2 + 2, CAND_LETTERS[index], {
+        fontSize: '14px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
+        backgroundColor: COLORS.gold, padding: { x: 5, y: 1 },
+      }).setOrigin(0, 0));
+      this.candObjects.push(face.container);
+      this.candViews.push(face);
+    });
+    for (const view of this.handCards) this.setInfo(view, null);
+  }
+
+  /** At the flip: mark which candidate the opponent actually played, dim the other. */
+  private markPlayedCandidate(cardId: string) {
+    this.candIds.forEach((id, index) => {
+      const view = this.candViews[index];
+      if (!view?.container.active) return;
+      if (id === cardId) {
+        view.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
+        this.tweens.add({ targets: view.container, scale: 1.12, duration: 160, yoyo: true });
+        view.container.add(this.add.text(0, CAND_H / 2 + 9, t('game.oppPlayed'), {
+          fontSize: '11px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
+          backgroundColor: COLORS.gold, padding: { x: 4, y: 1 },
+        }).setOrigin(0.5));
+      } else {
+        view.container.setAlpha(0.4);
+      }
+    });
+  }
+
   /** Fan positions for `count` held cards: spread along an arc, outer cards lower and tilted outward. */
   private fanSlot(index: number, count: number): { x: number; y: number; rotation: number } {
     const spacing = Math.min(HAND_SPACING_MAX, HAND_SPAN / Math.max(count, 1));
@@ -621,11 +694,14 @@ export class GameScene extends Phaser.Scene {
   /** Raise a held card like picking it up: lift, straighten, enlarge, bring to the front. */
   private liftCard(view: HandCardView, scale: number, ease = 'Sine.Out') {
     view.container.setDepth(70);
+    // The raised card's "vs A / vs B" label would sit on the hint line: hide the hint meanwhile.
+    this.bonusText.setAlpha(0);
     this.tweens.add({ targets: view.container, y: view.baseY - HAND_LIFT, rotation: 0, scale, duration: 200, ease });
   }
 
   private settleCard(view: HandCardView) {
     view.container.setDepth(view.depth);
+    if (!this.selectedId || this.selectedId === view.id) this.bonusText.setAlpha(1);
     this.tweens.add({
       targets: view.container,
       y: view.baseY - (view.current && this.handMode === 'main' ? CURRENT_LIFT : 0),
@@ -922,6 +998,7 @@ export class GameScene extends Phaser.Scene {
     const laneIndex = this.laneIndexNow();
     const lane = LANE_ORDER[laneIndex];
     if (!lane) return;
+    this.bonusText.setAlpha(1);
     if (this.handMode === 'partner') {
       const main = this.mainOf(player);
       this.promptText.setText(t('game.partnerPrompt', { player: this.label(player), card: cardById(main ?? '')?.name ?? '' }));
@@ -943,6 +1020,8 @@ export class GameScene extends Phaser.Scene {
     this.picker = HUMAN;
     this.cpuLanding = false;
     this.highlightLane(lane);
+    // Open info: the CPU's two candidates for this lane are face up; which one it plays is not.
+    this.renderCandidates(play.hands[CPU][play.laneIndex] ?? [], `${this.currentRound}:${play.laneIndex}`);
     this.renderHand(HUMAN, 'main');
     this.showPrompt(HUMAN);
     this.statusText.setText(t('game.opponentThinking', { name: this.label(CPU) }));
@@ -1096,6 +1175,7 @@ export class GameScene extends Phaser.Scene {
     if (!lane) return;
     this.highlightLane(lane);
     const laneKey = `${view.round}:${battle.laneIndex}`;
+    this.renderCandidates(battle.opponentCandidates ?? [], laneKey);
     if (battle.opponentLocked && this.oppPlayedKey !== laneKey) {
       this.oppPlayedKey = laneKey;
       this.opponentPlays(lane);
@@ -1115,7 +1195,7 @@ export class GameScene extends Phaser.Scene {
         ? t('game.opponentLocked', { name: opponentName(view) })
         : t('game.locked', { name: opponentName(view) }));
       const partner = battle.myPartner ? cardById(battle.myPartner) : undefined;
-      this.bonusText.setText(battle.myMain
+      this.bonusText.setAlpha(1).setText(battle.myMain
         ? t('game.lockedChoice', { card: cardById(battle.myMain)?.name ?? '', partner: partner?.name ?? t('game.noSynergy') })
         : '');
       return;
@@ -1197,6 +1277,8 @@ export class GameScene extends Phaser.Scene {
       { player: Player.P1, row: this.rowOf(Player.P1), card: result.p1Card, winRate: result.p1WinRate, link: result.p1Synergy.links[0] ?? null, total: result.p1Total },
       { player: Player.P2, row: this.rowOf(Player.P2), card: result.p2Card, winRate: result.p2WinRate, link: result.p2Synergy.links[0] ?? null, total: result.p2Total },
     ];
+    const opponentSide = otherPlayer(this.bottomPlayer);
+    this.markPlayedCandidate(opponentSide === Player.P1 ? result.p1Card.id : result.p2Card.id);
     // Reconnects can skip the face-down step: make sure the opponent's card isn't still flying in.
     if (this.slots.get('top')?.kind === 'empty') this.setBackSlot('top', lane);
 
@@ -1261,7 +1343,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Fade and slide the resolved lane's cards off the table, then put the empty slots back. */
   private sweepTable(onDone: () => void) {
-    const targets: Phaser.GameObjects.GameObject[] = [...this.laneFx];
+    const targets: Phaser.GameObjects.GameObject[] = [...this.laneFx, ...this.candObjects];
     for (const row of ['top', 'bottom'] as Row[]) {
       const slot = this.slots.get(row);
       if (slot) targets.push(slot.container);
@@ -1277,6 +1359,10 @@ export class GameScene extends Phaser.Scene {
       onComplete: () => {
         this.laneFx.forEach(object => object.destroy());
         this.laneFx = [];
+        this.candObjects.forEach(object => object.destroy());
+        this.candObjects = [];
+        this.candViews = [];
+        this.candIds = [];
         for (const row of ['top', 'bottom'] as Row[]) {
           this.setEmptySlot(row);
           this.scoreTexts.get(row)!.setText('').setAlpha(1).setX(SCORE_X).setScale(1);

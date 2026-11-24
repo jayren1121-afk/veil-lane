@@ -1,4 +1,13 @@
 export const K = 8;
+/**
+ * Counter-pick weight: the head-to-head part of a matchup (how far the GRID record between the
+ * two specific cards moves the win rate away from the cards' general strength) is multiplied
+ * by this. 1.5 was picked by simulation: guessing the opponent's card wrong in a counter-pick
+ * lane typically costs ~9 win-rate points (~19 points of lane margin), up from ~6 at 1.0.
+ */
+export const MATCHUP_SCALE = 1.5;
+/** Matchup win rates are kept inside [MATCHUP_MIN, 1 - MATCHUP_MIN] after scaling. */
+export const MATCHUP_MIN = 0.05;
 export const ALPHA = 1;
 export const BETA = 1;
 export const TOTAL_ROUNDS = 3;

@@ -324,6 +324,8 @@ export class OnlineMatch {
           ? partnerOptions(play, player, play.mains[player]!).map(link => link.card.id) : [],
         myRed: [...play.red[player]],
         opponentLocked: live ? isPlayerReady(play, opponent) : false,
+        // Open candidates: the opponent's two cards for this lane, in deal order (never reordered by their pick).
+        opponentCandidates: live ? [...play.hands[opponent][play.laneIndex]] : [],
         myCards,
         revealed: play.results,
         turnStartsAt: live ? data.turnStartsAt : null,

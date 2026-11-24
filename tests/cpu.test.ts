@@ -17,6 +17,8 @@ import {
   recordRoundResult,
   resolveCurrentLane,
   RoundPlay,
+  submitMainPick,
+  submitPartnerPick,
   summarizeRound,
 } from '../src/game/rules';
 
@@ -105,17 +107,19 @@ describe('CPU opponent', () => {
     expect(checked).toBeGreaterThan(0);
   });
 
-  it("never peeks: its choice is the same whatever the player's hand or pick is", () => {
+  it("never peeks: same choice whatever the player's pick, partner, red cards or other lanes are", () => {
     for (let seed = 1; seed <= 60; seed++) {
       const play = createRoundPlay(1, { [Player.P1]: new Set(), [Player.P2]: new Set() } as Record<Player, Set<string>>, seeded(seed));
       const a = clone(play);
       const b = clone(play);
-      // Player 1 picks differently in each copy and their hands are shuffled around.
       const offer = currentOffer(b, Player.P1);
       a.mains[Player.P1] = offer[0];
       b.mains[Player.P1] = offer[1] ?? offer[0];
-      b.hands[Player.P1] = [...b.hands[Player.P1]].reverse();
-      b.red[Player.P1] = b.hands[Player.P1].flat().slice(0, 3);
+      b.partners[Player.P1] = b.hands[Player.P1][3][0];
+      b.partnerDone[Player.P1] = true;
+      // Shuffle the player's other lanes (hidden) but keep the current lane's open candidates.
+      b.hands[Player.P1] = [b.hands[Player.P1][0], ...b.hands[Player.P1].slice(1).reverse()];
+      b.red[Player.P1] = b.hands[Player.P1].slice(1).flat().slice(0, 3);
       expect(cpuTakeTurn(a, Player.P2, seeded(seed * 5))).toBe(true);
       expect(cpuTakeTurn(b, Player.P2, seeded(seed * 5))).toBe(true);
       expect(b.mains[Player.P2]).toBe(a.mains[Player.P2]);
@@ -123,33 +127,51 @@ describe('CPU opponent', () => {
     }
   });
 
-  it('mostly takes the higher expected lane score (win rate + partner %)', () => {
-    let clear = 0;
-    let agreed = 0;
-    for (let seed = 1; seed <= 400; seed++) {
+  it("reads the player's open candidates: different candidates can change its pick", () => {
+    let changed = 0;
+    for (let seed = 1; seed <= 200; seed++) {
       const play = createRoundPlay(1, { [Player.P1]: new Set(), [Player.P2]: new Set() } as Record<Player, Set<string>>, seeded(seed));
-      const offer = currentOffer(play, Player.P2);
-      if (offer.length < 2) continue;
-      const scores = offer.map(id => cpuExpectedScore(play, Player.P2, id));
-      if (Math.abs(scores[0] - scores[1]) < 0.06) continue;
-      clear++;
-      const best = scores[0] > scores[1] ? offer[0] : offer[1];
-      if (cpuChooseMain(play, Player.P2, seeded(seed * 3)) === best) agreed++;
+      const other = createRoundPlay(1, { [Player.P1]: new Set(), [Player.P2]: new Set() } as Record<Player, Set<string>>, seeded(seed + 5000));
+      const swapped = clone(play);
+      swapped.hands[Player.P1] = [other.hands[Player.P1][0].filter(id => !play.hands[Player.P2].flat().includes(id)), ...play.hands[Player.P1].slice(1)];
+      if (swapped.hands[Player.P1][0].length < 2) continue;
+      if (cpuChooseMain(play, Player.P2, seeded(9)) !== cpuChooseMain(swapped, Player.P2, seeded(9))) changed++;
     }
-    expect(clear).toBeGreaterThan(20);
-    expect(agreed / clear).toBeGreaterThan(0.9);
+    expect(changed).toBeGreaterThan(10);
   });
 
-  it('is not fully predictable: noise sometimes changes close calls', () => {
-    const picks = new Set<string | null>();
-    for (let seed = 1; seed <= 400 && picks.size < 2; seed++) {
-      const play = createRoundPlay(1, { [Player.P1]: new Set(), [Player.P2]: new Set() } as Record<Player, Set<string>>, seeded(seed));
-      const offer = currentOffer(play, Player.P2);
-      const scores = offer.map(id => cpuExpectedScore(play, Player.P2, id));
-      if (offer.length < 2 || Math.abs(scores[0] - scores[1]) > 0.01) continue;
-      for (let r = 1; r <= 40; r++) picks.add(cpuChooseMain(play, Player.P2, seeded(r * 977)));
+  it('beats simple players over many lanes and sometimes double-bluffs', () => {
+    const lanes = { greedy: [0, 0], random: [0, 0] } as Record<string, [number, number]>;
+    let varied = 0;
+    for (let seed = 1; seed <= 300; seed++) {
+      for (const style of ['greedy', 'random'] as const) {
+        const play = createRoundPlay(1, { [Player.P1]: new Set(), [Player.P2]: new Set() } as Record<Player, Set<string>>, seeded(seed));
+        const brain = seeded(seed * 17);
+        const coin = seeded(seed * 29);
+        while (!isRoundPlayComplete(play)) {
+          const offer = currentOffer(play, Player.P1);
+          const main = style === 'random'
+            ? offer[Math.floor(coin() * offer.length)]
+            : [...offer].sort((x, y) => cpuExpectedScore(play, Player.P1, y) - cpuExpectedScore(play, Player.P1, x))[0];
+          submitMainPick(play, Player.P1, main);
+          if (!play.partnerDone[Player.P1]) submitPartnerPick(play, Player.P1, partnerOptions(play, Player.P1, main)[0].card.id);
+          cpuTakeTurn(play, Player.P2, brain);
+          const result = resolveCurrentLane(play)!;
+          if (result.laneWinner === Player.P2) lanes[style][0]++;
+          if (result.laneWinner === Player.P1) lanes[style][1]++;
+        }
+      }
+      // Same lane, different random streams: the CPU should not always pick the same card.
+      const fresh = createRoundPlay(1, { [Player.P1]: new Set(), [Player.P2]: new Set() } as Record<Player, Set<string>>, seeded(seed));
+      const picks = new Set<string | null>();
+      for (let r = 1; r <= 12; r++) picks.add(cpuChooseMain(fresh, Player.P2, seeded(r * 7919 + seed)));
+      if (picks.size > 1) varied++;
     }
-    expect(picks.size).toBe(2);
+    const rate = (pair: [number, number]) => pair[0] / (pair[0] + pair[1]);
+    // Measured at the time of writing: ~65% of decided lanes vs random, ~54% vs greedy.
+    expect(rate(lanes.random)).toBeGreaterThan(0.5);
+    expect(rate(lanes.greedy)).toBeGreaterThan(0.5);
+    expect(varied).toBeGreaterThan(15);
   });
 
   it('picks a partner from its own options, usually the best one', () => {

@@ -46,6 +46,14 @@ export function sideLabel(view: MatchView, player: Player): string {
  * Subscribes a scene to the online client for its lifetime and shows a banner when the
  * opponent is disconnected or our own socket is reconnecting.
  */
+const quietScenes = new WeakSet<Phaser.Scene>();
+
+/** Stop showing the disconnected / reconnecting banner on this scene (e.g. under the opponent-left overlay). */
+export function hideOnlineBanner(scene: Phaser.Scene): void {
+  quietScenes.add(scene);
+  scene.events.emit('online-banner-refresh');
+}
+
 export function bindOnlineScene(scene: Phaser.Scene, onState: (view: MatchView) => void): OnlineClient | null {
   const client = getOnlineClient();
   if (!client) return null;
@@ -62,8 +70,10 @@ export function bindOnlineScene(scene: Phaser.Scene, onState: (view: MatchView) 
     else if (view && view.players[otherPlayer(view.you)] && !view.players[otherPlayer(view.you)]!.connected) {
       message = t('online.opponentDisconnected');
     }
+    if (quietScenes.has(scene)) message = '';
     banner.setText(message).setVisible(Boolean(message));
   };
+  scene.events.on('online-banner-refresh', refresh);
   const offState = client.onState(view => {
     refresh();
     onState(view);
@@ -73,6 +83,8 @@ export function bindOnlineScene(scene: Phaser.Scene, onState: (view: MatchView) 
   });
   refresh();
   scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+    scene.events.off('online-banner-refresh', refresh);
+    quietScenes.delete(scene);
     offState();
     offEvent();
   });

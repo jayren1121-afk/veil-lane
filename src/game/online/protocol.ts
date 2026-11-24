@@ -27,6 +27,8 @@ export interface BattleView {
   myRed: string[];
   /** Whether the opponent has finished the current lane (main + partner); the cards stay hidden. */
   opponentLocked: boolean;
+  /** The opponent's two candidate cards for the current lane (open info). Never says which one they picked. */
+  opponentCandidates: string[];
   /** This player's own played main cards this round (lane -> card id). */
   myCards: Partial<Record<Lane, string>>;
   /** Lanes already resolved, with both main cards, chosen partners and the duel result. */

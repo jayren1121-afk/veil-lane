@@ -6,6 +6,7 @@ import Phaser from 'phaser';
 import { t } from '../i18n';
 import { addPanel, COLORS, glowText } from './theme';
 import { addTextButton, UiButton } from './uiButton';
+import { hideOnlineBanner } from './onlineScene';
 
 /** Emitted on `game.events` when the browser back button is pressed (see main.ts). */
 export const BACK_EVENT = 'veil-back';
@@ -81,6 +82,16 @@ export function confirmDialog(
 /** Banner for the player who stays when the opponent leaves mid-match: they win. */
 export function showOpponentLeft(scene: Phaser.Scene, name: string, onDone: () => void): void {
   const { width, height } = scene.cameras.main;
+  hideOnlineBanner(scene);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    openDialogs.delete(scene);
+    onDone();
+  };
+  // Esc / browser back dismiss it the same way as the button: to the menu.
+  openDialogs.set(scene, finish);
   scene.add.rectangle(width / 2, height / 2, width, height, 0x050d18, 0.78).setDepth(DIALOG_DEPTH).setInteractive();
   addPanel(scene, width / 2, height / 2, 520, 250, 0x0b2034).setDepth(DIALOG_DEPTH + 1);
   scene.add.text(width / 2, height / 2 - 66, t('leave.opponentLeft', { name }), {
@@ -90,7 +101,7 @@ export function showOpponentLeft(scene: Phaser.Scene, name: string, onDone: () =
     fontSize: '40px', fontFamily: 'Arial', color: COLORS.win, fontStyle: 'bold',
   }).setOrigin(0.5).setDepth(DIALOG_DEPTH + 2);
   glowText(win, COLORS.win, 16);
-  addTextButton(scene, width / 2, height / 2 + 72, 220, 48, t('leave.toMenu'), onDone,
+  addTextButton(scene, width / 2, height / 2 + 72, 220, 48, t('leave.toMenu'), finish,
     { fontSize: 18, depth: DIALOG_DEPTH + 3 });
 }
 

@@ -2,7 +2,7 @@ import { Card, Lane, Placement, TeamScore, LaneMatchupDetail, SynergyDetail, Rou
 import { getMatchup } from '../data/matchups';
 import { getSynergy } from '../data/synergies';
 import { getLaneWinRate } from '../data/cards';
-import { ALPHA, BETA, K, ORDER_BONUS, WIN_RATE_TIE_EPSILON } from './constants';
+import { ALPHA, BETA, K, MATCHUP_MIN, MATCHUP_SCALE, ORDER_BONUS, WIN_RATE_TIE_EPSILON } from './constants';
 import { laneSynergyOf } from './synergy';
 
 /**
@@ -67,6 +67,18 @@ export function computeShrinkageWinRate(
     rawTotal: n,
     prior: p0,
   };
+}
+
+/**
+ * Lane duel win rate of `cardA` against `cardB`: the shrinkage win rate with its head-to-head
+ * (counter) part — the distance from the general-strength prior p0 — weighted by
+ * MATCHUP_SCALE, clamped to [MATCHUP_MIN, 1 - MATCHUP_MIN]. Symmetric: A-vs-B + B-vs-A = 1.
+ * This is what the battle scores, the "vs A / vs B" labels and the CPU use.
+ */
+export function laneMatchupWinRate(cardA: Card, cardB: Card, lane: Lane): number {
+  const { winRate, prior } = computeShrinkageWinRate(cardA, cardB, lane);
+  const scaled = prior + MATCHUP_SCALE * (winRate - prior);
+  return Math.min(1 - MATCHUP_MIN, Math.max(MATCHUP_MIN, scaled));
 }
 
 /**
@@ -217,14 +229,11 @@ export function resolveLaneDuel(
   p1Partner: LaneSynergyLink | null = null,
   p2Partner: LaneSynergyLink | null = null,
 ): LaneRevealResult {
-  const p1Shrinkage = computeShrinkageWinRate(p1Card, p2Card, lane);
-  const p2Shrinkage = computeShrinkageWinRate(p2Card, p1Card, lane);
-
-  const p1WinRate = p1Shrinkage.winRate;
-  const p2WinRate = p2Shrinkage.winRate;
+  const p1WinRate = laneMatchupWinRate(p1Card, p2Card, lane);
+  const p2WinRate = laneMatchupWinRate(p2Card, p1Card, lane);
 
   const p1BaseLogit = logit(getLaneWinRate(p1Card, lane));
-  const p1MuLogit = logit(p1Shrinkage.winRate);
+  const p1MuLogit = logit(p1WinRate);
   const matchupDelta = p1MuLogit - p1BaseLogit;
 
   const orderBonus = (ORDER_BONUS[orderIndex] ?? 0) / 100;

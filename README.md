@@ -24,10 +24,22 @@ The public Worker for this project is already deployed at
   The server (Cloudflare Worker + Durable Object) holds the hidden picks and runs the rules, so neither browser
   ever receives the opponent's unrevealed cards.
 - **vs CPU** (對戰電腦): play the computer offline, no server needed. The CPU gets its own hidden 10-card hand under the
-  same rules (Fearless, red partners, 20 s clock). Each lane it picks the main card with the best expected lane score
-  (lane win rate + best partner %) plus a little random noise, then usually the highest-% partner (sometimes the
-  runner-up). It only looks at its own hand and never at yours (`src/game/rules/cpu.ts`). After a short "thinking"
+  same rules (Fearless, red partners, 20 s clock). Each lane it guesses which of your two open candidates you
+  lean to, picks the card with the best expected lane score against that guess (head-to-head win rate + best
+  partner %), sometimes double-bluffs (assumes you'll counter its obvious answer and counters that), adds a little
+  noise, then usually takes the highest-% partner. It sees only its own hand and your two open candidates, never your
+  pick or the rest of your hand (`src/game/rules/cpu.ts`). In tests it wins ~65% of decided lanes against a random
+  picker and ~54% against a greedy one. After a short "thinking"
   delay its card slides down face-down, then the normal flip and partner pop play.
+- **Mind game (open candidates)**: each lane both players see the opponent's two candidate cards for that lane
+  (marked A and B), never which one they picked; the rest of their hand stays hidden. Above each of your two cards a
+  label shows its head-to-head win rate "vs A / vs B", so you guess the opponent's card and play its counter. Online
+  the server sends only `opponentCandidates` for the live lane; the pick is revealed only at the flip. The lane win
+  rate is the GRID head-to-head shrinkage rate with its counter part (distance from the cards' general strength)
+  weighted by `MATCHUP_SCALE = 1.5` (`src/game/rules/constants.ts`), chosen by simulation: in about 45% of lanes the
+  better card depends on the opponent's pick, and there a wrong guess costs a median ~9 win-rate points (~19 points of
+  lane margin, vs ~6 / ~13 unscaled). The CPU reads your two candidates (which one you likely favour), sometimes
+  double-bluffs, and adds a little noise; it never sees your actual pick.
 - **Table**: one card position per side for the current lane (opponent above, you below). Each lane's cards fly in,
   flip, partners pop in, the winner is shown, then the table is swept clear for the next lane. A lane title
   (e.g. 上路 1/5 · +5%) and a 5-dot record (green won / red lost / gold draw) show progress. Cards you already played
