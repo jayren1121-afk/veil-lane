@@ -29,6 +29,7 @@ export const MUSIC_TRACKS: Record<Exclude<MusicTrack, null>, string> = {
 export const SCENE_MUSIC: Record<string, MusicTrack> = {
   MenuScene: 'general',
   HowToPlayScene: 'general',
+  GalleryScene: 'general',
   DraftScene: 'draft',
   // Picking moved into GameScene (vs CPU and online), so the battle track plays there.
   GameScene: 'draft',

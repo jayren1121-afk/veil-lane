@@ -120,7 +120,7 @@ describe('background music', () => {
     expect(trackForScene('SummaryScene')).toBe('general');
     expect(trackForScene('DraftScene')).toBe('draft');
     expect(trackForScene('GameScene')).toBe('draft');
-    for (const scene of ['MenuScene', 'HowToPlayScene', 'SummaryScene', 'LobbyScene', 'LoginScene']) {
+    for (const scene of ['MenuScene', 'HowToPlayScene', 'GalleryScene', 'SummaryScene', 'LobbyScene', 'LoginScene']) {
       expect(trackForScene(scene)).toBe('general');
     }
     expect(summaryTrack(false)).toBe('draft');

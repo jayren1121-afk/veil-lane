@@ -70,6 +70,15 @@ export class MenuScene extends Phaser.Scene {
       fontStyle: 'bold',
     }).setOrigin(0.5);
 
+    const galleryY = howToY + 70;
+    const galleryButton = addButton(this, width / 2, galleryY, 300, 54, 0x17334a);
+    const galleryLabel = this.add.text(width / 2, galleryY, t('menu.gallery'), {
+      fontSize: '20px',
+      fontFamily: 'Arial',
+      color: COLORS.text,
+      fontStyle: 'bold',
+    }).setOrigin(0.5);
+
     // Account chip (top-left): Google account record, guest name, or sign-in prompt.
     const accountButton = addButton(this, 170, 36, 300, 38, 0x17334a).setDepth(20);
     const accountLabel = this.add.text(170, 36, '', {
@@ -98,6 +107,7 @@ export class MenuScene extends Phaser.Scene {
       this.scene.start('GameScene', {});
     });
     this.styleButton(howToButton, () => this.scene.start('HowToPlayScene'));
+    this.styleButton(galleryButton, () => this.scene.start('GalleryScene'));
 
     const zhButton = addButton(this, width - 150, 36, 68, 34, 0x17334a).setDepth(20);
     const enButton = addButton(this, width - 72, 36, 58, 34, 0x17334a).setDepth(20);
@@ -114,6 +124,7 @@ export class MenuScene extends Phaser.Scene {
       localLabel.setText(t('menu.local'));
       updateAccount();
       howToLabel.setText(t('menu.howToPlay'));
+      galleryLabel.setText(t('menu.gallery'));
       zhButton.setFillStyle(language === 'zh' ? 0x31536a : 0x17334a, 0.95)
         .setStrokeStyle(language === 'zh' ? 2 : 1, language === 'zh' ? 0xf2c76e : 0x56bfd2, 1);
       enButton.setFillStyle(language === 'en' ? 0x31536a : 0x17334a, 0.95)
