@@ -16,9 +16,6 @@ export const CARDS_PER_ROUND = 5;
 export const OFFERS_PER_LANE = 2;
 export const WIN_RATE_TIE_EPSILON = 1e-10;
 
-/** Order bonus by lane order: the earliest-played lane gets +5%, then 4/3/2/1. */
-export const ORDER_BONUS = [5, 4, 3, 2, 1] as const;
-
 /**
  * "Obvious synergy" thresholds from the aggregated pair table: a same-team pair counts when it
  * has at least SYNERGY_MIN_GAMES games together and beats its expected win rate by at least

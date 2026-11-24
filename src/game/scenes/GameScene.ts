@@ -19,7 +19,6 @@ import {
   LaneRevealResult,
   LaneSynergyLink,
   MatchState,
-  ORDER_BONUS,
   otherPlayer,
   Player,
   recordRoundResult,
@@ -27,13 +26,12 @@ import {
   RoundPlay,
   seededRandom,
   submitMainPick,
-  submitPartnerPick,
+  submitPartnerPicks,
   summarizeRound,
   cpuTakeTurn,
   cpuThinkDelay,
 } from '../rules';
 import { CARDS, getLaneWinRate } from '../data/cards';
-import { laneMatchupWinRate } from '../rules/duel';
 import { CARD_BACK_KEY, cardArtPath, cardBackPath } from '../data/art';
 import { t } from '../i18n';
 import { addBackButton, confirmDialog, showOpponentLeft } from './sceneNav';
@@ -54,7 +52,7 @@ const SLOT_W = 128;
 const SLOT_H = 168;
 const TOP_Y = 150;
 const BOTTOM_Y = 372;
-/** Middle line between the two slots: lane name + order bonus, and the 5-dot lane record. */
+/** Middle line between the two slots: lane name, and the 5-dot lane record. */
 const MID_Y = 261;
 const SCORE_X = BOARD_X + SLOT_W / 2 + 78;
 const DOCK_X = BOARD_X - SLOT_W / 2 - 66;
@@ -91,10 +89,12 @@ const HUMAN = Player.P1;
 const CPU = Player.P2;
 const FLIP_MS = 700;
 const PARTNER_MS = 1300;
+/** Gap between consecutive partners of one side flying in. */
+const PARTNER_STEP_MS = 520;
 const USED_PARTNER_RED = '#e0474c';
 
 type Row = 'top' | 'bottom';
-/** main = choose this lane's main card; partner = choose one synergy partner; view = look only; hidden = card backs. */
+/** main = choose this lane's main card; partner = choose any synergy partners (they stack); view = look only; hidden = card backs. */
 type HandMode = 'main' | 'partner' | 'view' | 'hidden';
 
 interface SlotView {
@@ -154,6 +154,8 @@ export class GameScene extends Phaser.Scene {
   private glowObjects: Phaser.GameObjects.GameObject[] = [];
   private oppHandObjects: Phaser.GameObjects.GameObject[] = [];
   private partnerLinks: LaneSynergyLink[] = [];
+  /** Partner step: the partner cards currently toggled on (any subset; bonuses stack). */
+  private selectedPartners = new Set<string>();
   /** Cards currently flying from the hand to the table. */
   private flying = 0;
   /** Online: main card sent but not yet confirmed (kept out of the held hand). */
@@ -210,6 +212,7 @@ export class GameScene extends Phaser.Scene {
     this.glowObjects = [];
     this.oppHandObjects = [];
     this.partnerLinks = [];
+    this.selectedPartners = new Set();
     this.flying = 0;
     this.pendingMain = null;
     this.oppPlayedKey = '';
@@ -518,14 +521,14 @@ export class GameScene extends Phaser.Scene {
     return face;
   }
 
-  /** Lane title on the table ("上路 1/5 · +5%") for the current lane, or blank between rounds. */
+  /** Lane title on the table ("上路 1/5") for the current lane, or blank between rounds. */
   private highlightLane(lane: Lane | null) {
     const index = lane ? LANE_ORDER.indexOf(lane) : -1;
     if (!lane || index < 0) {
       this.laneTitle.setText('');
       this.laneTitleBox.setVisible(false);
     } else {
-      this.laneTitle.setText(t('game.laneTitle', { lane: this.laneName(lane), number: index + 1, bonus: ORDER_BONUS[index] }))
+      this.laneTitle.setText(t('game.laneTitle', { lane: this.laneName(lane), number: index + 1 }))
         .setColor(laneColor(lane));
       this.laneTitleBox.setVisible(true).setStrokeStyle(2, hexToInt(laneColor(lane)), 0.9);
     }
@@ -600,8 +603,8 @@ export class GameScene extends Phaser.Scene {
     if (!view.info.active) return;
     const card = cardById(view.id);
     const lane = LANE_ORDER[view.laneIndex];
-    const vs = view.current && card && lane ? this.vsLines(card, lane) : [];
-    const lines = vs.length > 0 ? vs : [t('game.infoWinRate', { rate: card && lane ? (getLaneWinRate(card, lane) * 100).toFixed(1) : '-' })];
+    // No head-to-head info while picking: only the card's general lane win rate (matchups show after the flip).
+    const lines = [t('game.infoWinRate', { rate: card && lane ? (getLaneWinRate(card, lane) * 100).toFixed(1) : '-' })];
     let color: string = COLORS.text;
     let background: string = '#0b1c2ee6';
     if (bonus !== null) {
@@ -623,15 +626,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** "vs A 58%" / "vs B 44%": this card's matchup win rate against each open candidate. */
-  private vsLines(card: Card, lane: Lane): string[] {
-    return this.candIds.map((id, index) => {
-      const foe = cardById(id);
-      if (!foe) return '';
-      const rate = Math.round(laneMatchupWinRate(card, foe, lane) * 100);
-      return t('game.vsLine', { letter: CAND_LETTERS[index] ?? '?', rate });
-    }).filter(Boolean);
-  }
-
   /** Show the opponent's open candidates for this lane (A, B). Their actual pick stays hidden. */
   private renderCandidates(ids: string[], key: string) {
     if (this.candKey === key) return;
@@ -830,11 +824,11 @@ export class GameScene extends Phaser.Scene {
     if (this.busy || this.handMode === 'hidden') return;
     if (this.handMode === 'partner' && !this.partnerLinks.some(link => link.card.id === view.id)) return;
     if (over) {
-      if (this.selectedId !== view.id) this.liftCard(view, 1.05);
+      if (this.selectedId !== view.id && !this.selectedPartners.has(view.id)) this.liftCard(view, 1.05);
       if (this.handMode === 'main' && view.current && !this.selectedId) this.showGlow(this.optionsFor(this.handOwner, view.id));
       return;
     }
-    if (this.selectedId !== view.id) this.settleCard(view);
+    if (this.selectedId !== view.id && !this.selectedPartners.has(view.id)) this.settleCard(view);
     if (this.handMode === 'main' && view.current && !this.selectedId) this.clearGlow();
   }
 
@@ -869,29 +863,45 @@ export class GameScene extends Phaser.Scene {
     this.showConfirm(t('game.confirmPlay'));
   }
 
-  /** Partner step: only the glowing (eligible) hand cards are clickable; exactly one counts. */
+  /**
+   * Partner step: only the glowing (eligible) hand cards are clickable. Each click toggles a
+   * partner on/off; any subset counts (bonuses stack), and confirming with none is allowed.
+   */
   private bindPartnerChoices(player: Player) {
     const main = this.mainOf(player);
     if (!main) return;
     this.partnerLinks = this.optionsFor(player, main);
+    this.selectedPartners = new Set();
     this.showGlow(this.partnerLinks);
     this.choiceText.setText(t('game.choicePartnerStep', { card: cardById(main)?.name ?? main, count: this.partnerLinks.length }));
+    this.updatePartnerConfirm();
   }
 
-  private onPartnerClick(id: string, link: LaneSynergyLink) {
+  private onPartnerClick(id: string, _link: LaneSynergyLink) {
     if (this.busy) return;
-    if (this.selectedId === id) {
-      this.confirmChoice();
+    const view = this.handCards.find(item => item.id === id);
+    if (this.selectedPartners.has(id)) {
+      this.selectedPartners.delete(id);
+      if (view) this.settleCard(view);
+    } else {
+      this.selectedPartners.add(id);
+      if (view) this.liftCard(view, 1.08, 'Back.Out');
+    }
+    this.updatePartnerConfirm();
+  }
+
+  /** Confirm button + texts for the partner step: "confirm +X%" for the chosen set, or "no partners, go". */
+  private updatePartnerConfirm() {
+    const chosen = this.partnerLinks.filter(link => this.selectedPartners.has(link.card.id));
+    const total = chosen.reduce((sum, link) => sum + link.bonus, 0);
+    if (chosen.length === 0) {
+      this.statusText.setText('');
+      this.showConfirm(t('game.skipPartner'));
       return;
     }
-    const previous = this.handCards.find(item => item.id === this.selectedId);
-    this.selectedId = id;
-    if (previous) this.settleCard(previous);
-    const view = this.handCards.find(item => item.id === id);
-    if (view) this.liftCard(view, 1.08, 'Back.Out');
-    this.choiceText.setText(t('game.choicePartner', { partner: link.card.name, bonus: this.pct(link.bonus) }));
-    this.statusText.setText(t('game.selectedPartner', { card: link.card.name, bonus: this.pct(link.bonus) }));
-    this.showConfirm(t('game.confirmPartner'));
+    this.choiceText.setText(t('game.choicePartner', { partner: chosen.map(link => `${link.card.name} +${this.pct(link.bonus)}%`).join('、') }));
+    this.statusText.setText(t('game.selectedPartner', { count: chosen.length, bonus: this.pct(total) }));
+    this.showConfirm(t('game.confirmPartner', { bonus: this.pct(total) }));
   }
 
   /**
@@ -986,10 +996,16 @@ export class GameScene extends Phaser.Scene {
   }
 
   private confirmChoice() {
-    const id = this.selectedId;
-    if (!id || this.busy || this.flying > 0) return;
+    if (this.busy || this.flying > 0) return;
     const stage = this.handMode;
-    if (stage !== 'main' && stage !== 'partner') return;
+    if (stage === 'partner') {
+      const ids = this.partnerLinks.filter(link => this.selectedPartners.has(link.card.id)).map(link => link.card.id);
+      if (this.online) this.sendOnlinePartners(ids);
+      else this.localPartners(ids);
+      return;
+    }
+    const id = this.selectedId;
+    if (!id || stage !== 'main') return;
     if (this.online) this.sendOnline(stage, id);
     else this.localChoose(stage, id);
   }
@@ -1005,7 +1021,7 @@ export class GameScene extends Phaser.Scene {
       this.bonusText.setText(t('game.partnerHint'));
     } else {
       this.promptText.setText(t('game.pickPrompt', { player: this.label(player), lane: this.laneName(lane) }));
-      this.bonusText.setText(`${t('game.orderBonus', { bonus: ORDER_BONUS[laneIndex] })}　·　${t('game.pickHint')}`);
+      this.bonusText.setText(t('game.pickHint'));
     }
   }
 
@@ -1043,19 +1059,23 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private localChoose(stage: 'main' | 'partner', cardId: string) {
+  private localChoose(_stage: 'main', cardId: string) {
     const play = this.play;
     const player = this.picker;
     if (!play || !player || this.busy) return;
-    const error = stage === 'main' ? submitMainPick(play, player, cardId) : submitPartnerPick(play, player, cardId);
-    if (error) return;
-    if (stage === 'main') {
-      this.destroyConfirm();
-      this.clearGlow();
-      this.playFromHand(player, cardId, () => this.afterLocalMain(player));
-      return;
-    }
-    this.statusText.setText('');
+    if (submitMainPick(play, player, cardId)) return;
+    this.destroyConfirm();
+    this.clearGlow();
+    this.playFromHand(player, cardId, () => this.afterLocalMain(player));
+  }
+
+  private localPartners(ids: string[]) {
+    const play = this.play;
+    const player = this.picker;
+    if (!play || !player || this.busy) return;
+    if (submitPartnerPicks(play, player, ids)) return;
+    this.destroyConfirm();
+    this.statusText.setText(ids.length === 0 ? t('game.noPartnerChosen') : '');
     this.finishLocalTurn(player);
   }
 
@@ -1068,10 +1088,8 @@ export class GameScene extends Phaser.Scene {
       this.showPrompt(player);
       return;
     }
-    const partner = play.partners[player];
-    this.statusText.setText(partner
-      ? t('game.autoPartner', { card: cardById(partner)?.name ?? partner })
-      : t('game.noPartner'));
+    // Partner step already settled here only when no partner was eligible.
+    this.statusText.setText(t('game.noPartner'));
     this.finishLocalTurn(player);
   }
 
@@ -1083,7 +1101,7 @@ export class GameScene extends Phaser.Scene {
     if (!autoCompletePick(play, player, this.random)) return;
     const mainId = play.mains[player]!;
     const main = cardById(mainId)?.name ?? '';
-    const partner = play.partners[player];
+    const partner = play.partners[player][0];
     this.statusText.setText(partner
       ? t('game.autoPickedPartner', { card: main, partner: cardById(partner)?.name ?? partner })
       : t('game.autoPicked', { card: main }));
@@ -1194,9 +1212,9 @@ export class GameScene extends Phaser.Scene {
       this.promptText.setText(battle.opponentLocked
         ? t('game.opponentLocked', { name: opponentName(view) })
         : t('game.locked', { name: opponentName(view) }));
-      const partner = battle.myPartner ? cardById(battle.myPartner) : undefined;
+      const partners = (battle.myPartners ?? []).map(id => cardById(id)?.name ?? id);
       this.bonusText.setAlpha(1).setText(battle.myMain
-        ? t('game.lockedChoice', { card: cardById(battle.myMain)?.name ?? '', partner: partner?.name ?? t('game.noSynergy') })
+        ? t('game.lockedChoice', { card: cardById(battle.myMain)?.name ?? '', partner: partners.length ? partners.join('、') : t('game.noSynergy') })
         : '');
       return;
     }
@@ -1206,9 +1224,23 @@ export class GameScene extends Phaser.Scene {
       : t('game.opponentThinking', { name: opponentName(view) }));
   }
 
-  private sendOnline(stage: 'main' | 'partner', cardId: string) {
+  private sendOnlinePartners(cardIds: string[]) {
     if (!this.online || !this.view?.battle) return;
-    this.online.send({ type: stage === 'main' ? 'pick' : 'partner', cardId });
+    this.online.send({ type: 'partner', cardIds });
+    this.destroyConfirm();
+    this.pendingUntil = Date.now() + 3000;
+    this.pendingKey = `${this.view.battle.laneIndex}:partner`;
+    this.statusText.setText(cardIds.length === 0 ? t('game.noPartnerChosen') : '');
+    this.refreshOnline();
+    this.time.delayedCall(3100, () => {
+      this.renderedKey = '';
+      this.refreshOnline();
+    });
+  }
+
+  private sendOnline(stage: 'main', cardId: string) {
+    if (!this.online || !this.view?.battle) return;
+    this.online.send({ type: 'pick', cardId });
     if (stage === 'main') {
       this.destroyConfirm();
       this.clearGlow();
@@ -1274,8 +1306,8 @@ export class GameScene extends Phaser.Scene {
     this.choiceText.setText('');
 
     const sides = [
-      { player: Player.P1, row: this.rowOf(Player.P1), card: result.p1Card, winRate: result.p1WinRate, link: result.p1Synergy.links[0] ?? null, total: result.p1Total },
-      { player: Player.P2, row: this.rowOf(Player.P2), card: result.p2Card, winRate: result.p2WinRate, link: result.p2Synergy.links[0] ?? null, total: result.p2Total },
+      { player: Player.P1, row: this.rowOf(Player.P1), card: result.p1Card, winRate: result.p1WinRate, links: result.p1Synergy.links, synergy: result.p1Synergy.bonus, total: result.p1Total },
+      { player: Player.P2, row: this.rowOf(Player.P2), card: result.p2Card, winRate: result.p2WinRate, links: result.p2Synergy.links, synergy: result.p2Synergy.bonus, total: result.p2Total },
     ];
     const opponentSide = otherPlayer(this.bottomPlayer);
     this.markPlayedCandidate(opponentSide === Player.P1 ? result.p1Card.id : result.p2Card.id);
@@ -1284,6 +1316,7 @@ export class GameScene extends Phaser.Scene {
 
     // 1) Both main cards were face-down; they flip together.
     const faces = new Map<Row, CardView>();
+    const breakdowns = new Map<Row, Phaser.GameObjects.Text>();
     for (const side of sides) {
       const face = this.setFaceSlot(side.row, lane, side.card);
       face.container.setScale(0, 1);
@@ -1293,20 +1326,30 @@ export class GameScene extends Phaser.Scene {
         .setBlendMode(Phaser.BlendModes.ADD).setDepth(40);
       this.tweens.add({ targets: flash, alpha: 0, duration: 280, onComplete: () => flash.destroy() });
       const score = this.scoreTexts.get(side.row)!;
-      score.setAlpha(1).setText(`${((side.winRate + result.orderBonus) * 100).toFixed(1)}%`).setColor(COLORS.text);
+      score.setAlpha(1).setText(`${(side.winRate * 100).toFixed(1)}%`).setColor(COLORS.text);
+      // The head-to-head matchup of the pairing that actually happened, revealed with the flip.
+      const breakdown = this.add.text(SCORE_X, this.rowY(side.row) + 26, this.breakdownText(side.winRate, null), {
+        fontSize: '12px', fontFamily: 'Arial', color: COLORS.muted, align: 'center',
+      }).setOrigin(0.5).setDepth(30);
+      breakdowns.set(side.row, breakdown);
+      this.laneFx.push(breakdown);
     }
 
-    // 2) Each side's chosen partner pops out and flies in beside its main card with its tier %.
-    const anyPartner = sides.some(side => side.link);
+    // 2) Each side's chosen partners pop out one after another and fly in beside its main card;
+    //    the score climbs by each tier % and settles on the stacked total.
+    const maxPartners = Math.max(...sides.map(side => side.links.length));
     for (const side of sides) {
-      if (!side.link) continue;
-      const link = side.link;
-      const totalAfter = side.winRate + result.orderBonus + link.bonus;
-      this.time.delayedCall(FLIP_MS, () => this.popPartner(side.row, link, totalAfter, faces.get(side.row)!));
+      let running = side.winRate;
+      side.links.forEach((link, index) => {
+        running += link.bonus;
+        const totalAfter = running;
+        this.time.delayedCall(FLIP_MS + index * PARTNER_STEP_MS,
+          () => this.popPartner(side.row, link, totalAfter, faces.get(side.row)!, index));
+      });
     }
 
     // 3) Lane winner.
-    const winnerAt = FLIP_MS + (anyPartner ? PARTNER_MS : 150);
+    const winnerAt = FLIP_MS + (maxPartners > 0 ? PARTNER_MS + (maxPartners - 1) * PARTNER_STEP_MS : 150);
     this.time.delayedCall(winnerAt, () => {
       for (const side of sides) {
         const score = this.scoreTexts.get(side.row)!;
@@ -1314,6 +1357,7 @@ export class GameScene extends Phaser.Scene {
         const lost = result.laneWinner !== null && !won;
         score.setText(`${(side.total * 100).toFixed(1)}%`)
           .setColor(won ? COLORS.win : lost ? COLORS.lose : COLORS.gold);
+        breakdowns.get(side.row)?.setText(this.breakdownText(side.winRate, side.links.length ? side.synergy : null, side.links.length));
         const face = faces.get(side.row)!;
         if (won) {
           face.border.setStrokeStyle(5, hexToInt(COLORS.win), 1);
@@ -1339,6 +1383,13 @@ export class GameScene extends Phaser.Scene {
         onDone();
       }));
     });
+  }
+
+  /** "matchup 53.7% (+ ✦9% ×2)" under a lane score after the flip. */
+  private breakdownText(matchup: number, synergy: number | null, partners = 1): string {
+    const parts = [t('game.matchupPart', { rate: (matchup * 100).toFixed(1) })];
+    if (synergy) parts.push(`✦${Math.round(synergy * 100)}%${partners > 1 ? ` ×${partners}` : ''}`);
+    return parts.join(' + ');
   }
 
   /** Fade and slide the resolved lane's cards off the table, then put the empty slots back. */
@@ -1381,7 +1432,7 @@ export class GameScene extends Phaser.Scene {
     return { x: BOARD_X, y: row === 'top' ? -SLOT_H / 2 : HAND_Y };
   }
 
-  private popPartner(row: Row, link: LaneSynergyLink, totalAfter: number, target: CardView) {
+  private popPartner(row: Row, link: LaneSynergyLink, totalAfter: number, target: CardView, index = 0) {
     if (!this.scene.isActive()) return;
     const from = this.partnerOrigin(row, link);
     const toX = BOARD_X;
@@ -1401,11 +1452,13 @@ export class GameScene extends Phaser.Scene {
       backgroundColor: COLORS.gold, padding: { x: 8, y: 2 },
     }).setOrigin(0.5));
     this.laneFx.push(copy.container);
-    const dockY = toY + (row === 'top' ? 12 : -12);
+    // Several partners fan out to the left of the main card, each a little further out.
+    const dockY = toY + (row === 'top' ? 12 : -12) + (row === 'top' ? 1 : -1) * index * 10;
+    copy.container.setDepth(50 + index);
 
     this.tweens.add({
       targets: copy.container,
-      x: DOCK_X,
+      x: DOCK_X - index * 46,
       y: dockY,
       scale: 0.72,
       duration: 520,

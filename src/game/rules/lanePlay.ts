@@ -44,7 +44,7 @@ export function dealHand(excluded: Iterable<string>, random: () => number = Math
 function emptyPicks(play: RoundPlay): void {
   for (const player of PLAYERS) {
     play.mains[player] = null;
-    play.partners[player] = null;
+    play.partners[player] = [];
     play.partnerDone[player] = false;
   }
 }
@@ -63,7 +63,7 @@ export function createRoundPlay(
     excluded: { [Player.P1]: p1Excluded, [Player.P2]: p2Excluded } as Record<Player, string[]>,
     hands: { [Player.P1]: dealHand(p1Excluded, random), [Player.P2]: dealHand(p2Excluded, random) } as Record<Player, string[][]>,
     mains: { [Player.P1]: null, [Player.P2]: null } as Record<Player, string | null>,
-    partners: { [Player.P1]: null, [Player.P2]: null } as Record<Player, string | null>,
+    partners: { [Player.P1]: [], [Player.P2]: [] } as Record<Player, string[]>,
     partnerDone: { [Player.P1]: false, [Player.P2]: false } as Record<Player, boolean>,
     played: { [Player.P1]: [], [Player.P2]: [] } as Record<Player, string[]>,
     red: { [Player.P1]: [], [Player.P2]: [] } as Record<Player, string[]>,
@@ -120,37 +120,47 @@ export function partnerOptions(play: RoundPlay, player: Player, mainId: string):
 }
 
 /**
- * Lock `player`'s MAIN card for the current lane. The partner step is settled automatically
- * when there are 0 options (no partner) or exactly 1 (that one). Returns an error or null.
+ * Lock `player`'s MAIN card for the current lane. With no eligible partner the partner step is
+ * settled right away (no partners); otherwise the player chooses any subset next (even with
+ * one option, which they may skip). Returns an error or null.
  */
 export function submitMainPick(play: RoundPlay, player: Player, cardId: string): string | null {
   if (isRoundPlayComplete(play)) return 'ROUND_COMPLETE';
   if (play.mains[player] !== null) return 'ALREADY_PICKED';
   if (!currentOffer(play, player).includes(cardId)) return 'INVALID_PICK';
   play.mains[player] = cardId;
-  const options = partnerOptions(play, player, cardId);
-  if (options.length <= 1) {
-    play.partners[player] = options[0]?.card.id ?? null;
-    play.partnerDone[player] = true;
-  }
-  return null;
-}
-
-/** Choose `player`'s single synergy partner for the current lane. Returns an error or null. */
-export function submitPartnerPick(play: RoundPlay, player: Player, cardId: string): string | null {
-  if (isRoundPlayComplete(play)) return 'ROUND_COMPLETE';
-  const main = play.mains[player];
-  if (main === null) return 'NO_MAIN';
-  if (play.partnerDone[player]) return 'ALREADY_PICKED';
-  if (!partnerOptions(play, player, main).some(link => link.card.id === cardId)) return 'INVALID_PARTNER';
-  play.partners[player] = cardId;
-  play.partnerDone[player] = true;
+  play.partners[player] = [];
+  play.partnerDone[player] = partnerOptions(play, player, cardId).length === 0;
   return null;
 }
 
 /**
- * Timeout: pick a random main card if none is locked, then the highest-% partner if the
- * partner step is still open. Returns true if anything changed.
+ * Choose `player`'s synergy partners for the current lane: any subset of the eligible options
+ * (empty = none). Their bonuses stack; each chosen card turns red for the rest of the round.
+ * Returns an error or null.
+ */
+export function submitPartnerPicks(play: RoundPlay, player: Player, cardIds: readonly string[]): string | null {
+  if (isRoundPlayComplete(play)) return 'ROUND_COMPLETE';
+  const main = play.mains[player];
+  if (main === null) return 'NO_MAIN';
+  if (play.partnerDone[player]) return 'ALREADY_PICKED';
+  if (!Array.isArray(cardIds) || cardIds.some(id => typeof id !== 'string')) return 'INVALID_PARTNER';
+  if (new Set(cardIds).size !== cardIds.length) return 'DUPLICATE_PARTNER';
+  const options = partnerOptions(play, player, main);
+  if (!cardIds.every(id => options.some(link => link.card.id === id))) return 'INVALID_PARTNER';
+  play.partners[player] = options.filter(link => cardIds.includes(link.card.id)).map(link => link.card.id);
+  play.partnerDone[player] = true;
+  return null;
+}
+
+/** Shorthand: choose exactly one partner. */
+export function submitPartnerPick(play: RoundPlay, player: Player, cardId: string): string | null {
+  return submitPartnerPicks(play, player, [cardId]);
+}
+
+/**
+ * Timeout: pick a random main card if none is locked, then (if the partner step is still open)
+ * only the single highest-% eligible partner. Returns true if anything changed.
  */
 export function autoCompletePick(play: RoundPlay, player: Player, random: () => number = Math.random): boolean {
   if (isRoundPlayComplete(play) || isPlayerReady(play, player)) return false;
@@ -161,7 +171,7 @@ export function autoCompletePick(play: RoundPlay, player: Player, random: () => 
   }
   if (!play.partnerDone[player]) {
     const best = partnerOptions(play, player, play.mains[player]!)[0];
-    play.partners[player] = best?.card.id ?? null;
+    play.partners[player] = best ? [best.card.id] : [];
     play.partnerDone[player] = true;
   }
   return true;
@@ -176,16 +186,16 @@ export function bothReady(play: RoundPlay): boolean {
   return isPlayerReady(play, Player.P1) && isPlayerReady(play, Player.P2);
 }
 
-function chosenLink(play: RoundPlay, player: Player): LaneSynergyLink | null {
-  const partner = play.partners[player];
+function chosenLinks(play: RoundPlay, player: Player): LaneSynergyLink[] {
+  const chosen = play.partners[player] ?? [];
   const main = play.mains[player];
-  if (!partner || !main) return null;
-  return partnerOptions(play, player, main).find(link => link.card.id === partner) ?? null;
+  if (!main || chosen.length === 0) return [];
+  return partnerOptions(play, player, main).filter(link => chosen.includes(link.card.id));
 }
 
 /**
- * Resolve the current lane once both players are ready: matchup + order bonus + the chosen
- * partner's tier %. Chosen partners turn red for the rest of the round.
+ * Resolve the current lane once both players are ready: matchup + the summed tier %
+ * of every chosen partner. Chosen partners turn red for the rest of the round.
  */
 export function resolveCurrentLane(play: RoundPlay): LaneRevealResult | null {
   const lane = currentPlayLane(play);
@@ -193,13 +203,13 @@ export function resolveCurrentLane(play: RoundPlay): LaneRevealResult | null {
   const p1Card = CARD_BY_ID.get(play.mains[Player.P1]!);
   const p2Card = CARD_BY_ID.get(play.mains[Player.P2]!);
   if (!p1Card || !p2Card) return null;
-  const p1Link = chosenLink(play, Player.P1);
-  const p2Link = chosenLink(play, Player.P2);
-  const result = resolveLaneDuel(p1Card, p2Card, lane, play.laneIndex, p1Link, p2Link);
+  const p1Links = chosenLinks(play, Player.P1);
+  const p2Links = chosenLinks(play, Player.P2);
+  const result = resolveLaneDuel(p1Card, p2Card, lane, play.laneIndex, p1Links, p2Links);
   play.played[Player.P1].push(p1Card.id);
   play.played[Player.P2].push(p2Card.id);
-  if (p1Link) play.red[Player.P1].push(p1Link.card.id);
-  if (p2Link) play.red[Player.P2].push(p2Link.card.id);
+  play.red[Player.P1].push(...p1Links.map(link => link.card.id));
+  play.red[Player.P2].push(...p2Links.map(link => link.card.id));
   play.results.push(result);
   play.laneIndex += 1;
   emptyPicks(play);

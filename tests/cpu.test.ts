@@ -3,7 +3,11 @@ import {
   createMatchState,
   createRoundPlay,
   cpuChooseMain,
-  cpuChoosePartner,
+  cpuChoosePartners,
+  cpuPartnerPlan,
+  laterPartnerValue,
+  CPU_PARTNER_KEEP,
+  LANE_ORDER,
   cpuExpectedScore,
   cpuTakeTurn,
   cpuThinkDelay,
@@ -58,12 +62,13 @@ function playCpuMatch(seed: number) {
         expect(isPlayerReady(play, player)).toBe(true);
         const main = play.mains[player]!;
         expect(offer).toContain(main);
-        const partner = play.partners[player];
-        if (partner) {
+        const options = partnerOptions(play, player, main).map(link => link.card.id);
+        for (const partner of play.partners[player]) {
           expect(redBefore.has(partner)).toBe(false);
           expect(partner).not.toBe(main);
-          expect(play.hands[player].flat()).toContain(partner);
+          expect(options).toContain(partner);
         }
+        expect(new Set(play.partners[player]).size).toBe(play.partners[player].length);
         mainsByPlayer[player].push(main);
       }
       expect(resolveCurrentLane(play)).not.toBeNull();
@@ -93,7 +98,7 @@ describe('CPU opponent', () => {
           const offer = currentOffer(play, Player.P2);
           const probe = clone(play);
           expect(cpuTakeTurn(probe, Player.P2, brain)).toBe(true);
-          if (probe.partners[Player.P2]) expect(play.red[Player.P2]).not.toContain(probe.partners[Player.P2]);
+          for (const id of probe.partners[Player.P2]) expect(play.red[Player.P2]).not.toContain(id);
           for (const id of offer) {
             for (const option of partnerOptions(play, Player.P2, id)) expect(play.red[Player.P2]).not.toContain(option.card.id);
           }
@@ -115,7 +120,7 @@ describe('CPU opponent', () => {
       const offer = currentOffer(b, Player.P1);
       a.mains[Player.P1] = offer[0];
       b.mains[Player.P1] = offer[1] ?? offer[0];
-      b.partners[Player.P1] = b.hands[Player.P1][3][0];
+      b.partners[Player.P1] = [b.hands[Player.P1][3][0], b.hands[Player.P1][4][0]];
       b.partnerDone[Player.P1] = true;
       // Shuffle the player's other lanes (hidden) but keep the current lane's open candidates.
       b.hands[Player.P1] = [b.hands[Player.P1][0], ...b.hands[Player.P1].slice(1).reverse()];
@@ -123,7 +128,7 @@ describe('CPU opponent', () => {
       expect(cpuTakeTurn(a, Player.P2, seeded(seed * 5))).toBe(true);
       expect(cpuTakeTurn(b, Player.P2, seeded(seed * 5))).toBe(true);
       expect(b.mains[Player.P2]).toBe(a.mains[Player.P2]);
-      expect(b.partners[Player.P2]).toBe(a.partners[Player.P2]);
+      expect(b.partners[Player.P2]).toEqual(a.partners[Player.P2]);
     }
   });
 
@@ -174,22 +179,43 @@ describe('CPU opponent', () => {
     expect(varied).toBeGreaterThan(15);
   });
 
-  it('picks a partner from its own options, usually the best one', () => {
-    let many = 0;
-    let best = 0;
-    for (let seed = 1; seed <= 600; seed++) {
+  it('chooses a subset of its partners: spends cheap ones, saves ones worth more in a later lane, spends all in the last lane', () => {
+    let lanes = 0;
+    let saved = 0;
+    let stacked = 0;
+    let lastLaneChecks = 0;
+    for (let seed = 1; seed <= 400; seed++) {
       const play = createRoundPlay(1, { [Player.P1]: new Set(), [Player.P2]: new Set() } as Record<Player, Set<string>>, seeded(seed));
-      const main = currentOffer(play, Player.P2)[0];
-      const options = partnerOptions(play, Player.P2, main);
-      if (options.length < 2) continue;
-      play.mains[Player.P2] = main;
-      const choice = cpuChoosePartner(play, Player.P2, seeded(seed * 11));
-      expect(options.map(option => option.card.id)).toContain(choice);
-      many++;
-      if (choice === options[0].card.id) best++;
+      while (!isRoundPlayComplete(play)) {
+        const main = currentOffer(play, Player.P2)[0];
+        const options = partnerOptions(play, Player.P2, main);
+        if (options.length > 0) {
+          play.mains[Player.P2] = main;
+          const plan = cpuPartnerPlan(play, Player.P2, main).map(link => link.card.id);
+          for (const link of options) {
+            const keep = link.bonus < CPU_PARTNER_KEEP * laterPartnerValue(play, Player.P2, link.card.id);
+            expect(plan.includes(link.card.id)).toBe(!keep);
+            if (keep) saved++;
+          }
+          if (play.laneIndex === LANE_ORDER.length - 1) {
+            expect(plan).toEqual(options.map(link => link.card.id));
+            lastLaneChecks++;
+          }
+          if (plan.length >= 2) stacked++;
+          const choice = cpuChoosePartners(play, Player.P2, seeded(seed * 11 + play.laneIndex));
+          for (const id of choice) expect(options.map(link => link.card.id)).toContain(id);
+          lanes++;
+          play.mains[Player.P2] = null;
+        }
+        cpuTakeTurn(play, Player.P1, seeded(seed));
+        cpuTakeTurn(play, Player.P2, seeded(seed + 1));
+        resolveCurrentLane(play);
+      }
     }
-    expect(many).toBeGreaterThan(20);
-    expect(best / many).toBeGreaterThan(0.7);
+    expect(lanes).toBeGreaterThan(100);
+    expect(saved).toBeGreaterThan(10);
+    expect(stacked).toBeGreaterThan(10);
+    expect(lastLaneChecks).toBeGreaterThan(10);
   });
 
   it('thinks for a short, bounded time', () => {

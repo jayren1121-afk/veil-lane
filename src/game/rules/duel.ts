@@ -2,7 +2,7 @@ import { Card, Lane, Placement, TeamScore, LaneMatchupDetail, SynergyDetail, Rou
 import { getMatchup } from '../data/matchups';
 import { getSynergy } from '../data/synergies';
 import { getLaneWinRate } from '../data/cards';
-import { ALPHA, BETA, K, MATCHUP_MIN, MATCHUP_SCALE, ORDER_BONUS, WIN_RATE_TIE_EPSILON } from './constants';
+import { ALPHA, BETA, K, MATCHUP_MIN, MATCHUP_SCALE, WIN_RATE_TIE_EPSILON } from './constants';
 import { laneSynergyOf } from './synergy';
 
 /**
@@ -218,16 +218,16 @@ export function computeTeamScore(
 }
 
 /**
- * Resolve a single lane duel. Each side's lane total is its matchup win rate, plus the common
- * order bonus, plus the tier bonus of the one synergy partner that side chose (if any).
+ * Resolve a single lane duel. Each side's lane total is its matchup win rate plus the summed
+ * tier bonuses of every synergy partner that side chose (partners stack).
  */
 export function resolveLaneDuel(
   p1Card: Card,
   p2Card: Card,
   lane: Lane,
   orderIndex = 0,
-  p1Partner: LaneSynergyLink | null = null,
-  p2Partner: LaneSynergyLink | null = null,
+  p1Partner: readonly LaneSynergyLink[] | LaneSynergyLink | null = null,
+  p2Partner: readonly LaneSynergyLink[] | LaneSynergyLink | null = null,
 ): LaneRevealResult {
   const p1WinRate = laneMatchupWinRate(p1Card, p2Card, lane);
   const p2WinRate = laneMatchupWinRate(p2Card, p1Card, lane);
@@ -236,11 +236,10 @@ export function resolveLaneDuel(
   const p1MuLogit = logit(p1WinRate);
   const matchupDelta = p1MuLogit - p1BaseLogit;
 
-  const orderBonus = (ORDER_BONUS[orderIndex] ?? 0) / 100;
   const p1Synergy = laneSynergyOf(p1Partner);
   const p2Synergy = laneSynergyOf(p2Partner);
-  const p1Total = p1WinRate + orderBonus + p1Synergy.bonus;
-  const p2Total = p2WinRate + orderBonus + p2Synergy.bonus;
+  const p1Total = p1WinRate + p1Synergy.bonus;
+  const p2Total = p2WinRate + p2Synergy.bonus;
 
   let laneWinner: Player | null = null;
   if (p1Total - p2Total > WIN_RATE_TIE_EPSILON) {
@@ -257,7 +256,6 @@ export function resolveLaneDuel(
     p2WinRate,
     matchupDelta,
     orderIndex,
-    orderBonus,
     p1Synergy,
     p2Synergy,
     p1Total,
@@ -284,7 +282,6 @@ export function summarizeRound(laneResults: LaneRevealResult[], firstPlayer: Pla
     laneResults,
     p1MatchupAvg: mean(result => result.p1WinRate),
     p2MatchupAvg: mean(result => result.p2WinRate),
-    orderBonusAvg: mean(result => result.orderBonus),
     p1SynergyAvg: mean(result => result.p1Synergy.bonus),
     p2SynergyAvg: mean(result => result.p2Synergy.bonus),
     p1WinRate,

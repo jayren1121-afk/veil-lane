@@ -1,4 +1,3 @@
-import { ORDER_BONUS } from './constants';
 import { Lane, LANE_ORDER, Player, RevealState } from './types';
 
 export function createRevealState(firstPlayer: Player): RevealState {
@@ -20,8 +19,4 @@ export function isRevealComplete(state: RevealState): boolean {
 
 export function getRevealOrder(state: RevealState): Lane[] {
   return [...state.revealOrder];
-}
-
-export function getOrderBonus(orderIndex: number): number {
-  return ORDER_BONUS[orderIndex] ?? 0;
 }

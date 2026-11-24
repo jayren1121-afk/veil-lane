@@ -80,7 +80,7 @@ function assertNoLeak() {
       allowed.add(r.p2Card.id);
       for (const link of [...r.p1Synergy.links, ...r.p2Synergy.links]) allowed.add(link.card.id);
     }
-    for (const id of [...otherSt.battle.myHand.flat(), otherSt.battle.myMain, otherSt.battle.myPartner]) {
+    for (const id of [...otherSt.battle.myHand.flat(), otherSt.battle.myMain, ...(otherSt.battle.myPartners ?? [])]) {
       if (!id || allowed.has(id)) continue;
       if (json.includes(`"${id}"`)) fail(`leak of opponent card ${id} to ${cl.you}`);
     }
@@ -99,9 +99,11 @@ function checkLaneScores(st) {
     if (checkedLanes.has(key)) continue;
     checkedLanes.add(key);
     for (const side of ['p1', 'p2']) {
-      const expected = r[`${side}WinRate`] + r.orderBonus + r[`${side}Synergy`].bonus;
+      const expected = r[`${side}WinRate`] + r[`${side}Synergy`].bonus;
       if (Math.abs(expected - r[`${side}Total`]) > 1e-9) fail(`lane total mismatch ${key} ${side}`);
-      if (r[`${side}Synergy`].links.length > 1) fail(`synergy stacked in ${key} ${side}`);
+      const sum = r[`${side}Synergy`].links.reduce((t, link) => t + link.bonus, 0);
+      if (Math.abs(sum - r[`${side}Synergy`].bonus) > 1e-9) fail(`partner bonuses must stack (sum) in ${key} ${side}`);
+      if (new Set(r[`${side}Synergy`].links.map(link => link.card.id)).size !== r[`${side}Synergy`].links.length) fail(`duplicate partner in ${key}`);
       for (const link of r[`${side}Synergy`].links) {
         if (![0.05, 0.04, 0.03, 0.02, 0.01].some(tier => Math.abs(tier - link.bonus) < 1e-9)) fail(`bad synergy tier ${link.bonus}`);
         synergyLinks++;
@@ -153,9 +155,10 @@ while (true) {
         const waited = (Date.now() - t0) / 1000;
         const lane = b.state.battle.revealed[1];
         const autoCard = lane.p2Card.id;
-        log(`server auto-played ${autoCard} for Bob after ${waited.toFixed(1)}s (partner: ${lane.p2Synergy.links[0]?.card.id ?? 'none'})`);
+        log(`server auto-played ${autoCard} for Bob after ${waited.toFixed(1)}s (partners: ${lane.p2Synergy.links.map(l => l.card.id).join(',') || 'none'})`);
         if (!hand[1].includes(autoCard)) fail('auto-pick must be one of the lane\'s two cards');
         for (const link of lane.p2Synergy.links) if (!hand.flat().includes(link.card.id)) fail('auto partner must come from the hand');
+        if (lane.p2Synergy.links.length > 1) fail('timeout must auto-pick at most one partner');
         if (waited < 19 || waited > 30) fail(`auto-pick timing off: ${waited}s`);
         break;
       }
@@ -163,7 +166,8 @@ while (true) {
         cl.send({ type: 'pick', cardId: hand[battle.laneIndex][cl.you === 'P1' ? 1 : 0] });
       } else {
         partnerChoices++;
-        cl.send({ type: 'partner', cardId: battle.myPartnerOptions[battle.myPartnerOptions.length - 1] });
+        // P1 stacks every option, P2 takes none: exercises multi-partner and the empty set.
+        cl.send({ type: 'partner', cardIds: cl.you === 'P1' ? [...battle.myPartnerOptions] : [] });
       }
     }
     continue;

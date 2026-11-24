@@ -25,7 +25,7 @@ import {
   isPlayerReady,
   partnerOptions,
   submitMainPick,
-  submitPartnerPick,
+  submitPartnerPicks,
   summarizeRound,
   TOTAL_ROUNDS,
 } from '../rules';
@@ -210,12 +210,12 @@ export class OnlineMatch {
     return null;
   }
 
-  /** Choose the single synergy partner for `player`'s locked main card. */
-  partner(player: Player, cardId: string, now: number): string | null {
+  /** Choose `player`'s synergy partners (any subset of the options, may be empty) for the locked main card. */
+  partner(player: Player, cardIds: readonly string[], now: number): string | null {
     this.tick(now);
     const play = this.data.play;
     if (this.data.phase !== 'battle' || !play || isRoundPlayComplete(play)) return 'NOT_BATTLE_PHASE';
-    const error = submitPartnerPick(play, player, cardId);
+    const error = submitPartnerPicks(play, player, cardIds);
     if (error) return error;
     if (bothReady(play)) this.resolveLane(now);
     return null;
@@ -318,7 +318,7 @@ export class OnlineMatch {
         currentLane: live ? currentPlayLane(play) : null,
         myHand: play.hands[player].map(ids => [...ids]),
         myMain: live ? play.mains[player] : null,
-        myPartner: live ? play.partners[player] : null,
+        myPartners: live ? [...(play.partners[player] ?? [])] : [],
         needPartner: live && play.mains[player] !== null && !play.partnerDone[player],
         myPartnerOptions: live && play.mains[player] !== null
           ? partnerOptions(play, player, play.mains[player]!).map(link => link.card.id) : [],

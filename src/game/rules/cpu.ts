@@ -10,11 +10,17 @@
  *  - double bluff (sometimes): assume the player expected that and switched to counter it,
  *    and counter the counter.
  * A little noise keeps it from being predictable.
+ *
+ * Partners stack, but each one is red for the rest of the round. So the CPU only spends a
+ * partner now when its bonus here is at least CPU_PARTNER_KEEP x the best bonus that card could
+ * still give one of its cards in a later lane; otherwise it saves it. In the last lane it spends
+ * everything.
  */
 import { getLaneWinRate } from '../data/cards';
 import { laneMatchupWinRate } from './duel';
-import { cardById, currentOffer, currentPlayLane, isRoundPlayComplete, partnerOptions, submitMainPick, submitPartnerPick } from './lanePlay';
-import { Card, Lane, Player, RoundPlay } from './types';
+import { cardById, currentOffer, currentPlayLane, handToPlacements, isRoundPlayComplete, partnerOptions, submitMainPick, submitPartnerPicks } from './lanePlay';
+import { eligiblePartners } from './synergy';
+import { Card, Lane, LANE_ORDER, LaneSynergyLink, Player, RoundPlay } from './types';
 
 /** Random noise (0-1 scale) added to each option's expected score. */
 export const CPU_SCORE_NOISE = 0.02;
@@ -22,8 +28,10 @@ export const CPU_SCORE_NOISE = 0.02;
 export const CPU_READ_TEMPERATURE = 0.04;
 /** Chance the CPU plays the double bluff (counters the player's counter). */
 export const CPU_DOUBLE_BLUFF = 0.25;
-/** Chance to take the second-best partner instead of the best one. */
+/** Chance to flip the keep/spend decision on one random partner option. */
 export const CPU_PARTNER_SURPRISE = 0.15;
+/** Spend a partner now if its bonus here is >= this share of its best later-lane bonus. */
+export const CPU_PARTNER_KEEP = 0.75;
 /** "Thinking" delay range before the CPU's card goes down, in ms. */
 export const CPU_THINK_MS = [900, 2200] as const;
 
@@ -34,14 +42,37 @@ export function openCandidates(play: RoundPlay, viewer: Player): Card[] {
   return (play.hands[other(viewer)][play.laneIndex] ?? []).map(id => cardById(id)).filter((card): card is Card => Boolean(card));
 }
 
-/** Best partner % `player` would get with `cardId` as main this lane (own hand only). */
+/** Best bonus `partnerId` could still give one of `player`'s cards in a LATER lane this round. */
+export function laterPartnerValue(play: RoundPlay, player: Player, partnerId: string): number {
+  const hand = handToPlacements(play.hands[player]);
+  const red = new Set(play.red[player]);
+  let best = 0;
+  for (let index = play.laneIndex + 1; index < LANE_ORDER.length; index++) {
+    const lane = LANE_ORDER[index];
+    for (const id of play.hands[player][index] ?? []) {
+      const card = cardById(id);
+      if (!card || id === partnerId) continue;
+      const link = eligiblePartners(card, lane, hand, red).find(item => item.card.id === partnerId);
+      if (link) best = Math.max(best, link.bonus);
+    }
+  }
+  return best;
+}
+
+/** The partners worth spending now with `mainId` as main (keep/spend rule, no randomness). */
+export function cpuPartnerPlan(play: RoundPlay, player: Player, mainId: string): LaneSynergyLink[] {
+  return partnerOptions(play, player, mainId)
+    .filter(link => link.bonus >= CPU_PARTNER_KEEP * laterPartnerValue(play, player, link.card.id));
+}
+
+/** Partner % `player` would add with `cardId` as main this lane under its keep/spend plan. */
 function partnerBonus(play: RoundPlay, player: Player, cardId: string): number {
-  return partnerOptions(play, player, cardId)[0]?.bonus ?? 0;
+  return cpuPartnerPlan(play, player, cardId).reduce((sum, link) => sum + link.bonus, 0);
 }
 
 /**
  * Expected lane score of `cardId` as `player`'s main against a belief over the opponent's
- * candidates: matchup win rate (weighted by the belief) + best partner %. With no candidates
+ * candidates: matchup win rate (weighted by the belief) + the partners it plans to spend. With no candidates
  * known it falls back to the card's lane win rate.
  */
 export function cpuExpectedScore(play: RoundPlay, player: Player, cardId: string, belief?: number[]): number {
@@ -105,14 +136,22 @@ export function cpuChooseMain(play: RoundPlay, player: Player, random: () => num
   return bestAgainst(play, player, offer, belief, noise);
 }
 
-/** Choose a partner for the locked main card: usually the highest %, sometimes the runner-up. */
-export function cpuChoosePartner(play: RoundPlay, player: Player, random: () => number = Math.random): string | null {
+/**
+ * Choose the partners for the locked main card: the keep/spend plan, and now and then the
+ * decision on one random option is flipped so the CPU isn't fully predictable.
+ */
+export function cpuChoosePartners(play: RoundPlay, player: Player, random: () => number = Math.random): string[] {
   const main = play.mains[player];
-  if (!main) return null;
+  if (!main) return [];
   const options = partnerOptions(play, player, main);
-  if (options.length === 0) return null;
-  const pick = options.length > 1 && random() < CPU_PARTNER_SURPRISE ? options[1] : options[0];
-  return pick.card.id;
+  if (options.length === 0) return [];
+  const chosen = new Set(cpuPartnerPlan(play, player, main).map(link => link.card.id));
+  if (random() < CPU_PARTNER_SURPRISE) {
+    const flip = options[Math.min(options.length - 1, Math.floor(random() * options.length))].card.id;
+    if (chosen.has(flip)) chosen.delete(flip);
+    else chosen.add(flip);
+  }
+  return options.filter(link => chosen.has(link.card.id)).map(link => link.card.id);
 }
 
 /** Lock the CPU's whole turn for the current lane (main, then partner if it has to choose). */
@@ -121,8 +160,7 @@ export function cpuTakeTurn(play: RoundPlay, player: Player, random: () => numbe
   const main = cpuChooseMain(play, player, random);
   if (!main || submitMainPick(play, player, main) !== null) return false;
   if (!play.partnerDone[player]) {
-    const partner = cpuChoosePartner(play, player, random);
-    if (!partner || submitPartnerPick(play, player, partner) !== null) return false;
+    if (submitPartnerPicks(play, player, cpuChoosePartners(play, player, random)) !== null) return false;
   }
   return true;
 }

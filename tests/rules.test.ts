@@ -170,10 +170,10 @@ describe('resolveRoundScores', () => {
     const result = resolveRoundScores(p1, p2);
 
     expect(result.p1MatchupAvg + result.p2MatchupAvg).toBeCloseTo(1, 5);
-    expect(result.p1WinRate).toBeCloseTo(result.p1MatchupAvg + result.orderBonusAvg + result.p1SynergyAvg, 10);
-    expect(result.p2WinRate).toBeCloseTo(result.p2MatchupAvg + result.orderBonusAvg + result.p2SynergyAvg, 10);
+    expect(result.p1WinRate).toBeCloseTo(result.p1MatchupAvg + result.p1SynergyAvg, 10);
+    expect(result.p2WinRate).toBeCloseTo(result.p2MatchupAvg + result.p2SynergyAvg, 10);
     for (const lane of result.laneResults) {
-      expect(lane.p1Total).toBeCloseTo(lane.p1WinRate + lane.orderBonus + lane.p1Synergy.bonus, 10);
+      expect(lane.p1Total).toBeCloseTo(lane.p1WinRate + lane.p1Synergy.bonus, 10);
     }
     expect(result.p1WinRate).toBeGreaterThan(0);
     expect(result.p2WinRate).toBeGreaterThan(0);

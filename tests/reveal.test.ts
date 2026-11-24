@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  Card, CardRole, createRevealState, getOrderBonus, getRemainingLanes, getRevealOrder,
-  isRevealComplete, Lane, LANE_ORDER, ORDER_BONUS, Player, revealLane, resolveLaneDuel,
+  Card, CardRole, createRevealState, getRemainingLanes, getRevealOrder,
+  isRevealComplete, Lane, LANE_ORDER, Player, revealLane, resolveLaneDuel,
   resolveRoundScores,
 } from '../src/game/rules';
 import { Placement } from '../src/game/rules/types';
@@ -19,16 +19,16 @@ function makeCard(id: string, lane: Lane): Card {
 }
 
 describe('lane reveal rules', () => {
-  it('applies ORDER_BONUS by the actual reveal index to both players', () => {
+  it('has no order bonus: without partners a lane total is just the matchup win rate', () => {
     const first = makeCard('unknown_p1', Lane.Top);
     const second = makeCard('unknown_p2', Lane.Top);
-    ORDER_BONUS.forEach((bonus, orderIndex) => {
+    for (let orderIndex = 0; orderIndex < 5; orderIndex++) {
       const result = resolveLaneDuel(first, second, Lane.Top, orderIndex);
-      expect(result.orderBonus).toBe(bonus / 100);
-      expect(result.p1Total - result.p1WinRate).toBeCloseTo(bonus / 100, 10);
-      expect(result.p2Total - result.p2WinRate).toBeCloseTo(bonus / 100, 10);
-      expect(result.p1Total - result.p1WinRate).toBeCloseTo(result.p2Total - result.p2WinRate, 10);
-    });
+      expect(result).not.toHaveProperty('orderBonus');
+      expect(result.orderIndex).toBe(orderIndex);
+      expect(result.p1Total).toBeCloseTo(result.p1WinRate, 10);
+      expect(result.p2Total).toBeCloseTo(result.p2WinRate, 10);
+    }
   });
 
   it('records chosen lanes in order and rejects a repeated lane', () => {
@@ -36,8 +36,6 @@ describe('lane reveal rules', () => {
     state = revealLane(state, Lane.Mid)!;
     state = revealLane(state, Lane.Top)!;
     expect(getRevealOrder(state)).toEqual([Lane.Mid, Lane.Top]);
-    expect(getOrderBonus(0)).toBe(5);
-    expect(getOrderBonus(1)).toBe(4);
     expect(getRemainingLanes(state)).toEqual(LANE_ORDER.filter(lane => lane !== Lane.Mid && lane !== Lane.Top));
     expect(revealLane(state, Lane.Mid)).toBeNull();
     expect(isRevealComplete(state)).toBe(false);
@@ -50,7 +48,7 @@ describe('lane reveal rules', () => {
     const result = resolveRoundScores(p1, p2, order, Player.P2);
     expect(result.firstPlayer).toBe(Player.P2);
     expect(result.revealOrder).toEqual(order);
-    expect(result.laneResults.map(lane => lane.orderBonus)).toEqual(ORDER_BONUS.map(bonus => bonus / 100));
+    expect(result.laneResults.map(lane => lane.orderIndex)).toEqual([0, 1, 2, 3, 4]);
   });
 
   it('returns a tie when both teams have identical lane results and synergy', () => {

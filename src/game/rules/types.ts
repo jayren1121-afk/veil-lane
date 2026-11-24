@@ -123,7 +123,7 @@ export interface TeamScore {
   totalLogit: number;        // base + alpha*matchup + beta*synergy
 }
 
-// Result of a single lane duel (matchup + order bonus + per-lane synergy)
+// Result of a single lane duel (matchup + the summed synergy of the chosen partners)
 export interface LaneRevealResult {
   lane: Lane;
   p1Card: Card;
@@ -131,12 +131,11 @@ export interface LaneRevealResult {
   p1WinRate: number;         // P1 card win rate in this lane (matchup only)
   p2WinRate: number;         // P2 card win rate in this lane (matchup only)
   matchupDelta: number;      // logit delta for P1
-  orderIndex: number;
-  orderBonus: number;        // common bonus on a 0-1 scale, e.g. 0.05 means +5%
+  orderIndex: number;        // position in the reveal order (0-4); no score effect
   p1Synergy: LaneSynergy;    // P1 synergy from P1's earlier-played cards this round
   p2Synergy: LaneSynergy;    // P2 synergy from P2's earlier-played cards this round
-  p1Total: number;           // matchup win rate + order bonus + synergy
-  p2Total: number;           // matchup win rate + order bonus + synergy
+  p1Total: number;           // matchup win rate + synergy
+  p2Total: number;           // matchup win rate + synergy
   laneWinner: Player | null; // null = tie
 }
 
@@ -147,7 +146,6 @@ export interface RoundResult {
   laneResults: LaneRevealResult[];
   p1MatchupAvg: number;
   p2MatchupAvg: number;
-  orderBonusAvg: number;
   p1SynergyAvg: number;      // mean per-lane synergy bonus
   p2SynergyAvg: number;
   p1WinRate: number;         // mean of P1 lane totals
@@ -194,9 +192,9 @@ export interface RoundPlay {
   hands: Record<Player, string[][]>;
   /** Current lane's locked main card (null = still choosing). */
   mains: Record<Player, string | null>;
-  /** Current lane's chosen partner card id (null = none / not chosen yet). */
-  partners: Record<Player, string | null>;
-  /** True once the player's partner step for the current lane is settled (picked, auto or none). */
+  /** Current lane's chosen partner card ids (0..all eligible; their bonuses stack). */
+  partners: Record<Player, string[]>;
+  /** True once the player's partner step for the current lane is settled (chosen, timed out or none eligible). */
   partnerDone: Record<Player, boolean>;
   /** Main cards played so far this round, in lane order. */
   played: Record<Player, string[]>;

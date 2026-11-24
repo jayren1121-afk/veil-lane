@@ -17,9 +17,9 @@ export interface BattleView {
   myHand: string[][];
   /** This player's locked main card for the current lane, if any. */
   myMain: string | null;
-  /** This player's chosen partner for the current lane (null = none or not chosen yet). */
-  myPartner: string | null;
-  /** True while the main card is locked but this player still has to choose one of 2+ partners. */
+  /** This player's chosen partners for the current lane (empty = none or not chosen yet). */
+  myPartners: string[];
+  /** True while the main card is locked and this player still has to choose partners (any subset, bonuses stack). */
   needPartner: boolean;
   /** Partner choices for the locked main card, best tier first (own hand only). */
   myPartnerOptions: string[];
@@ -35,7 +35,7 @@ export interface BattleView {
   revealed: LaneRevealResult[];
   /** Picks for the current lane open at this time (after the reveal animation pause). */
   turnStartsAt: number | null;
-  /** Server-enforced deadline; unfinished picks get a random main card and the best partner. */
+  /** Server-enforced deadline; unfinished picks get a random main card and only the single best partner. */
   turnDeadline: number | null;
 }
 
@@ -63,7 +63,7 @@ export interface MatchView {
 
 export type ClientMessage =
   | { type: 'pick'; cardId: string }
-  | { type: 'partner'; cardId: string }
+  | { type: 'partner'; cardIds: string[] } // Any subset of the partner options (empty = none).
   | { type: 'ready' }
   | { type: 'leave' } // Leave the room: frees the seat while waiting, forfeits mid-match.
   | { type: 'ping' };

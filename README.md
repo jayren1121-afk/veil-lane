@@ -3,15 +3,17 @@
 Hidden-card lane duel built with Vite + TypeScript + Phaser 4 (Cloud9 x JetBrains "Sky's The Limit" 2026, Event Mini Game).
 At the start of each round both players are dealt their own 10-card hand: 2 random cards for each lane, visible to them
 all round. Lanes are played in order (Top → Support). Each lane, each player secretly picks one of that lane's two cards as
-the MAIN card, then one synergy partner from the rest of their hand (any other lane, played or not). Per the aggregated
+the MAIN card, then any number of synergy partners (none up to every eligible card) from the rest of their hand (any other lane, played or not). Per the aggregated
 pro-match synergy table, a pair counts as synergy with at least 4 games together and a +6-point edge over its expected
 win rate (`SYNERGY_MIN_GAMES` / `SYNERGY_MIN_EDGE`). A card's partners are ranked by edge and pay +5/+4/+3/+2/+1% by rank
 (`SYNERGY_TIER`; with more than five partners the ranked list is split into five equal bands). Eligible partners glow gold
-with their %. Synergy does not stack: with 2+ eligible partners you choose one, with exactly one it is used
-automatically, with none the step is skipped. A chosen partner turns red for the rest of the round and can't be a partner
-again (it can still be played as the main card in its own lane, with its own partner pick); red resets every round. Both
-main cards go down face-down and flip together, each side's partner flies in, and lane score = matchup win rate + order
-bonus (+5…+1%) + partner %. The opponent's hand, main card and partner stay hidden until the flip.
+with their %. Partners stack: you toggle any subset (even with a single option, which you may skip; with none the step
+is skipped) and all their % are added. Every chosen partner turns red for the rest of the round and can't be a partner
+again in later lanes (it can still be played as the main card in its own lane, with its own partners); red resets every
+round, and partners are not Fearless (only played main cards are). So the choice is all-in now vs saving partners for
+later lanes. Both main cards go down face-down and flip together, each side's partners fly in one after another, and
+lane score = matchup win rate + the sum of the chosen partners' %. There is no order bonus. The opponent's hand, main
+card and partners stay hidden until the flip.
 Best of 3, Fearless: a card you played as MAIN is never dealt to you again in the match.
 
 The public Worker for this project is already deployed at
@@ -26,14 +28,18 @@ The public Worker for this project is already deployed at
 - **vs CPU** (對戰電腦): play the computer offline, no server needed. The CPU gets its own hidden 10-card hand under the
   same rules (Fearless, red partners, 20 s clock). Each lane it guesses which of your two open candidates you
   lean to, picks the card with the best expected lane score against that guess (head-to-head win rate + best
-  partner %), sometimes double-bluffs (assumes you'll counter its obvious answer and counters that), adds a little
-  noise, then usually takes the highest-% partner. It sees only its own hand and your two open candidates, never your
+  partners it plans to spend), sometimes double-bluffs (assumes you'll counter its obvious answer and counters that),
+  adds a little noise. For partners it spends a card now only if its % here is at least `CPU_PARTNER_KEEP` (0.75) of the
+  best % that card could still give one of its later-lane cards, otherwise it saves it (in the last lane it spends
+  everything); now and then it flips one of those decisions. It sees only its own hand and your two open candidates, never your
   pick or the rest of your hand (`src/game/rules/cpu.ts`). In tests it wins ~65% of decided lanes against a random
   picker and ~54% against a greedy one. After a short "thinking"
   delay its card slides down face-down, then the normal flip and partner pop play.
 - **Mind game (open candidates)**: each lane both players see the opponent's two candidate cards for that lane
-  (marked A and B), never which one they picked; the rest of their hand stays hidden. Above each of your two cards a
-  label shows its head-to-head win rate "vs A / vs B", so you guess the opponent's card and play its counter. Online
+  (marked A and B), never which one they picked; the rest of their hand stays hidden. No head-to-head numbers or
+  favourable/unfavourable hints are shown while picking (each card keeps only its general lane win rate and the
+  synergy / red tags); you guess the opponent's card from the cards themselves. The actual matchup % of the pairing
+  that happened appears at the flip, under each lane score ("matchup x% + ✦z%", with ×n for stacked partners). Online
   the server sends only `opponentCandidates` for the live lane; the pick is revealed only at the flip. The lane win
   rate is the GRID head-to-head shrinkage rate with its counter part (distance from the cards' general strength)
   weighted by `MATCHUP_SCALE = 1.5` (`src/game/rules/constants.ts`), chosen by simulation: in about 45% of lanes the
@@ -42,7 +48,7 @@ The public Worker for this project is already deployed at
   double-bluffs, and adds a little noise; it never sees your actual pick.
 - **Table**: one card position per side for the current lane (opponent above, you below). Each lane's cards fly in,
   flip, partners pop in, the winner is shown, then the table is swept clear for the next lane. A lane title
-  (e.g. 上路 1/5 · +5%) and a 5-dot record (green won / red lost / gold draw) show progress. Cards you already played
+  (e.g. 上路 1/5) and a 5-dot record (green won / red lost / gold draw) show progress. Cards you already played
   stay in your hand, dimmed and tagged "已出 / PLAYED", because they can still be picked as partners.
 - **Going back**: every screen except the menu has a top-left "← 返回 / BACK" button; Esc and the browser back
   button do the same (the browser back button never leaves the page). vs CPU exits straight to the menu. Online,
@@ -53,7 +59,7 @@ The public Worker for this project is already deployed at
   without any account, so judges can try it instantly.
 - **Battle timer**: each lane has a 20-second countdown per player covering both the main card and the partner pick
   (`BATTLE_TURN_SECONDS` in `src/game/rules/constants.ts`). It turns red for the last 5 seconds; on timeout a random main
-  card of the lane's two is played, then the highest-% partner. Online, the server enforces it with Durable Object alarms. vs CPU mode accepts `?seed=N` for reproducible deals (and CPU choices).
+  card of the lane's two is played, then only the single highest-% partner. Online, the server enforces it with Durable Object alarms. vs CPU mode accepts `?seed=N` for reproducible deals (and CPU choices).
 
 ## Develop
 

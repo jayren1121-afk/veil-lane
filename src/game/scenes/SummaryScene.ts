@@ -188,7 +188,7 @@ export class SummaryScene extends Phaser.Scene {
   }
 
   private laneBreakdown(result: LaneRevealResult, winRate: number, synergy: number): string {
-    const base = `${(winRate * 100).toFixed(1)}% + ${(result.orderBonus * 100).toFixed(0)}%`;
+    const base = `${(winRate * 100).toFixed(1)}%`;
     return synergy > 0 ? `${base} + ✦${(synergy * 100).toFixed(0)}%` : base;
   }
 

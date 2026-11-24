@@ -2,7 +2,6 @@ import Phaser from 'phaser';
 import {
   BATTLE_TURN_SECONDS,
   LANE_ORDER,
-  ORDER_BONUS,
   SYNERGY_TIER,
   TOTAL_ROUNDS,
 } from '../rules';
@@ -34,7 +33,6 @@ function getPages(): TutorialPage[] {
       lines: [
         t('tutorial.page3.line1'),
         t('tutorial.page3.line2', {
-          bonuses: ORDER_BONUS.map(bonus => `+${bonus}%`).join(' / '),
           tiers: SYNERGY_TIER.map(bonus => `+${bonus}%`).join(' / '),
         }),
         t('tutorial.page3.line3'),
@@ -170,36 +168,24 @@ export class HowToPlayScene extends Phaser.Scene {
       this.addMiniCard(x, 585, t('tutorial.reveal.revealed'), revealed ? COLORS.gold : laneColor(lane), revealed ? 'normal' : 'faceDown');
       this.addDiagramText(x, 527, lane, 13, revealed ? COLORS.gold : laneColor(lane));
     });
-    const revealedX = 370 + revealedIndex * 120;
-    this.addDiagramText(revealedX, 415, t('tutorial.reveal.order', { bonus: ORDER_BONUS[0] }), 14, COLORS.gold);
     this.addDiagramText(925, 470, 'P2', 16, COLORS.p2);
     this.addDiagramText(925, 585, 'P1', 16, COLORS.p1);
   }
 
   private drawScoreDiagram() {
     const boxes = [
-      { x: 240, label: t('tutorial.score.matchup'), sub: t('tutorial.score.grid'), color: COLORS.p1 },
-      { x: 490, label: t('tutorial.score.order'), sub: t('tutorial.score.both'), color: COLORS.gold },
-      { x: 740, label: t('tutorial.score.synergy'), sub: `+${SYNERGY_TIER[SYNERGY_TIER.length - 1]}–${SYNERGY_TIER[0]}%`, color: COLORS.green },
+      { x: 365, label: t('tutorial.score.matchup'), sub: t('tutorial.score.grid'), color: COLORS.p1 },
+      { x: 655, label: t('tutorial.score.synergy'), sub: `+${SYNERGY_TIER[SYNERGY_TIER.length - 1]}–${SYNERGY_TIER[0]}%`, color: COLORS.green },
     ];
     for (const box of boxes) {
       this.addDiagramPanel(box.x, 425, 200, 96, box.color);
       this.addDiagramText(box.x, 409, box.label, 18, box.color);
       this.addDiagramText(box.x, 443, box.sub, 15, COLORS.text);
     }
-    this.addDiagramText(365, 425, '＋', 24, COLORS.text);
-    this.addDiagramText(615, 425, '＋', 24, COLORS.text);
-    this.addArrow(852, 425, 898, 425, COLORS.cyan);
-    this.addDiagramPanel(985, 425, 150, 96, COLORS.title);
-    this.addDiagramText(985, 425, t('tutorial.score.total'), 20, COLORS.title);
-
-    this.addDiagramText(600, 525, t('tutorial.score.order'), 15, COLORS.muted);
-    ORDER_BONUS.forEach((bonus, index) => {
-      const x = 380 + index * 110;
-      this.addDiagramPanel(x, 590, 96, 60, COLORS.gold);
-      this.addDiagramText(x, 577, t('tutorial.score.orderNth', { number: index + 1 }), 13, COLORS.text);
-      this.addDiagramText(x, 601, `+${bonus}%`, 18, COLORS.gold);
-    });
+    this.addDiagramText(510, 425, '＋', 24, COLORS.text);
+    this.addArrow(767, 425, 838, 425, COLORS.cyan);
+    this.addDiagramPanel(930, 425, 150, 96, COLORS.title);
+    this.addDiagramText(930, 425, t('tutorial.score.total'), 20, COLORS.title);
   }
 
   private drawFearlessDiagram() {

@@ -103,7 +103,12 @@ export class MatchRoom extends DurableObject<Env> {
         error = typeof message.cardId === 'string' ? this.match.pick(attachment.player, message.cardId, now) : 'BAD_MESSAGE';
         break;
       case 'partner':
-        error = typeof message.cardId === 'string' ? this.match.partner(attachment.player, message.cardId, now) : 'BAD_MESSAGE';
+        {
+          const ids = (message as { cardIds?: unknown }).cardIds;
+          error = Array.isArray(ids) && ids.length <= 10 && ids.every(id => typeof id === 'string')
+            ? this.match.partner(attachment.player, ids as string[], now)
+            : 'BAD_MESSAGE';
+        }
         break;
       case 'ready':
         error = this.match.ready(attachment.player, now);

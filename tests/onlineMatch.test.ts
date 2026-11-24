@@ -57,7 +57,7 @@ function expectNoLeak(match: OnlineMatch, viewer: Player, now: number): number {
   const allowed = allowedIds(match, viewer);
   const opponent = otherPlayer(viewer);
   let checks = 0;
-  for (const id of [...play.hands[opponent].flat(), play.mains[opponent], play.partners[opponent]]) {
+  for (const id of [...play.hands[opponent].flat(), play.mains[opponent], ...(play.partners[opponent] ?? [])]) {
     if (!id || allowed.has(id)) continue;
     expect(serialized).not.toContain(`"${id}"`);
     checks++;
@@ -77,7 +77,7 @@ function playTurn(match: OnlineMatch, player: Player, now: number, choice = 0) {
   expect(match.pick(player, main, now)).toBeNull();
   if (match.data.phase !== 'battle') return;
   const after = match.viewFor(player, now).battle!;
-  if (after.needPartner) expect(match.partner(player, after.myPartnerOptions[0], now)).toBeNull();
+  if (after.needPartner) expect(match.partner(player, [after.myPartnerOptions[0]], now)).toBeNull();
 }
 
 /** Both players finish the current lane. */
@@ -175,7 +175,7 @@ describe('10-card hands', () => {
 });
 
 describe('partner choice online', () => {
-  it('asks for one partner when there are 2+, and counts only that one', () => {
+  it('asks for partners (any subset) and stacks the chosen ones', () => {
     const { match, now, main } = matchNeedingPartner();
     expect(match.pick(Player.P1, main, now)).toBeNull();
     const battle = match.viewFor(Player.P1, now).battle!;
@@ -184,20 +184,33 @@ describe('partner choice online', () => {
     // P1 is not done yet, so P2 sees "not locked".
     expect(match.viewFor(Player.P2, now).battle!.opponentLocked).toBe(false);
     const notOption = battle.myHand.flat().find(id => id !== main && !battle.myPartnerOptions.includes(id))!;
-    expect(match.partner(Player.P1, notOption, now)).toBe('INVALID_PARTNER');
-    const chosen = battle.myPartnerOptions[1];
+    expect(match.partner(Player.P1, [notOption], now)).toBe('INVALID_PARTNER');
+    expect(match.partner(Player.P1, [battle.myPartnerOptions[0], battle.myPartnerOptions[0]], now)).toBe('DUPLICATE_PARTNER');
+    const chosen = battle.myPartnerOptions.slice(0, 2);
     expect(match.partner(Player.P1, chosen, now)).toBeNull();
-    expect(match.partner(Player.P1, battle.myPartnerOptions[0], now)).toBe('ALREADY_PICKED');
+    expect(match.viewFor(Player.P1, now).battle!.myPartners).toEqual(chosen);
+    expect(match.partner(Player.P1, [], now)).toBe('ALREADY_PICKED');
     expect(match.viewFor(Player.P2, now).battle!.opponentLocked).toBe(true);
     const laneCount = match.data.play!.results.length;
     playTurn(match, Player.P2, now);
     const result = match.data.play!.results[laneCount];
     expect(result.p1Card.id).toBe(main);
-    expect(result.p1Synergy.links.map(link => link.card.id)).toEqual([chosen]);
-    expect(match.viewFor(Player.P1, now).battle!.myRed).toContain(chosen);
+    expect(result.p1Synergy.links.map(link => link.card.id)).toEqual(chosen);
+    expect(result.p1Synergy.bonus).toBeCloseTo(result.p1Synergy.links.reduce((sum, link) => sum + link.bonus, 0), 10);
+    expect(result.p1Total).toBeCloseTo(result.p1WinRate + result.p1Synergy.bonus, 10);
+    for (const id of chosen) expect(match.viewFor(Player.P1, now).battle!.myRed).toContain(id);
   });
 
-  it('on timeout fills in the highest-% partner for a locked main card', () => {
+  it('accepts choosing no partners at all', () => {
+    const { match, now, main } = matchNeedingPartner();
+    match.pick(Player.P1, main, now);
+    expect(match.partner(Player.P1, [], now)).toBeNull();
+    const laneCount = match.data.play!.results.length;
+    playTurn(match, Player.P2, now);
+    expect(match.data.play!.results[laneCount].p1Synergy.links).toEqual([]);
+  });
+
+  it('on timeout fills in only the single highest-% partner for a locked main card', () => {
     const { match, now, main } = matchNeedingPartner();
     match.pick(Player.P1, main, now);
     const best = match.viewFor(Player.P1, now).battle!.myPartnerOptions[0];
@@ -205,7 +218,7 @@ describe('partner choice online', () => {
     expect(match.tick(match.data.turnDeadline!)).toBe(true);
     const result = match.data.play!.results[laneCount];
     expect(result.p1Card.id).toBe(main);
-    expect(result.p1Synergy.links[0].card.id).toBe(best);
+    expect(result.p1Synergy.links.map(link => link.card.id)).toEqual([best]);
   });
 });
 
@@ -227,7 +240,7 @@ describe('hidden information never leaks', () => {
   it('keeps a pending partner choice hidden too', () => {
     const { match, now, main } = matchNeedingPartner();
     match.pick(Player.P1, main, now);
-    match.partner(Player.P1, match.viewFor(Player.P1, now).battle!.myPartnerOptions[1], now);
+    match.partner(Player.P1, match.viewFor(Player.P1, now).battle!.myPartnerOptions.slice(0, 2), now);
     expect(expectNoLeak(match, Player.P2, now)).toBeGreaterThan(0);
   });
 
@@ -417,7 +430,7 @@ describe('open candidates', () => {
       // Settle any partner choice the same way so only the main card differs.
       for (const m of [a, b]) {
         const v = m.viewFor(Player.P2, now).battle!;
-        if (v.needPartner) m.partner(Player.P2, v.myPartnerOptions[0], now);
+        if (v.needPartner) m.partner(Player.P2, [v.myPartnerOptions[0]], now);
       }
       const viewA = a.viewFor(Player.P1, now).battle!;
       const viewB = b.viewFor(Player.P1, now).battle!;

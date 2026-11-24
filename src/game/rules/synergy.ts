@@ -92,6 +92,7 @@ export function eligiblePartners(
   const links: LaneSynergyLink[] = [];
   for (const partner of ranking) {
     if (partner.cardId === main.id || red.has(partner.cardId)) continue;
+    if (links.some(link => link.card.id === partner.cardId)) continue;
     const placement = hand.find(item => item.lane !== lane && item.card.id === partner.cardId && item.lane === partner.lane);
     if (!placement) continue;
     links.push({ card: placement.card, lane: placement.lane, edge: partner.edge, rank: partner.rank, bonus: partner.bonus });
@@ -99,9 +100,10 @@ export function eligiblePartners(
   return links;
 }
 
-/** Synergy for one lane: synergy never stacks, so it is the single chosen partner (or none). */
-export function laneSynergyOf(partner: LaneSynergyLink | null | undefined): LaneSynergy {
-  return partner ? { links: [partner], bonus: partner.bonus } : { links: [], bonus: 0 };
+/** Synergy for one lane: every chosen partner counts and their tier bonuses stack (sum). */
+export function laneSynergyOf(partners: readonly LaneSynergyLink[] | LaneSynergyLink | null | undefined): LaneSynergy {
+  const links = partners == null ? [] : Array.isArray(partners) ? [...partners] : [partners as LaneSynergyLink];
+  return { links, bonus: links.reduce((sum, link) => sum + link.bonus, 0) };
 }
 
 /** Card ids that already served as a synergy partner for `side` in these resolved lanes (red cards). */

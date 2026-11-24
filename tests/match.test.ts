@@ -20,6 +20,7 @@ import {
   LANE_ORDER,
   OFFERS_PER_LANE,
   partnerOptions,
+  submitPartnerPicks,
   Player,
   recordRoundResult,
   resolveCurrentLane,
@@ -174,7 +175,7 @@ describe('main card pick', () => {
     expect(resolveCurrentLane(play)).toBeNull();
   });
 
-  it('plays the five lanes in order with the 5/4/3/2/1 order bonus', () => {
+  it('plays the five lanes in order; lane total = matchup + partner only (no order bonus)', () => {
     const play = createRoundPlay(1, noneUsed(), seeded(11));
     const lanes: Lane[] = [];
     while (!isRoundPlayComplete(play)) {
@@ -182,13 +183,13 @@ describe('main card pick', () => {
       finishTurn(play, Player.P1, 0);
       finishTurn(play, Player.P2, 1);
       const result = resolveCurrentLane(play)!;
-      expect(result.p1Total).toBeCloseTo(result.p1WinRate + result.orderBonus + result.p1Synergy.bonus, 10);
-      expect(result.p2Total).toBeCloseTo(result.p2WinRate + result.orderBonus + result.p2Synergy.bonus, 10);
+      expect(result.p1Total).toBeCloseTo(result.p1WinRate + result.p1Synergy.bonus, 10);
+      expect(result.p2Total).toBeCloseTo(result.p2WinRate + result.p2Synergy.bonus, 10);
       expect(result.p1Synergy.links.length).toBeLessThanOrEqual(1);
       expect(result.p2Synergy.links.length).toBeLessThanOrEqual(1);
     }
     expect(lanes).toEqual(LANE_ORDER);
-    expect(play.results.map(result => result.orderBonus)).toEqual([0.05, 0.04, 0.03, 0.02, 0.01]);
+    expect(play.results.every(result => !('orderBonus' in result))).toBe(true);
     expect(play.played[Player.P1]).toEqual(play.hands[Player.P1].map(ids => ids[0]));
   });
 });
@@ -222,26 +223,27 @@ describe('synergy partner from the whole hand', () => {
     expect(partnerOptions(early, Player.P1, main).every(link => LANE_ORDER.indexOf(link.lane) > 0)).toBe(true);
   });
 
-  it('skips the partner step with no partners and auto-uses a single partner', () => {
+  it('skips the partner step with no partners; a single partner is a choice too (no auto-pick)', () => {
     const none = findLane(play => optionCounts(play, Player.P1).includes(0));
     const plain = currentOffer(none, Player.P1).find(id => partnerOptions(none, Player.P1, id).length === 0)!;
     expect(submitMainPick(none, Player.P1, plain)).toBeNull();
     expect(isPlayerReady(none, Player.P1)).toBe(true);
-    expect(none.partners[Player.P1]).toBeNull();
+    expect(none.partners[Player.P1]).toEqual([]);
 
     const single = findLane(play => optionCounts(play, Player.P1).includes(1));
     const main = currentOffer(single, Player.P1).find(id => partnerOptions(single, Player.P1, id).length === 1)!;
     const only = partnerOptions(single, Player.P1, main)[0];
     expect(submitMainPick(single, Player.P1, main)).toBeNull();
-    expect(isPlayerReady(single, Player.P1)).toBe(true);
-    expect(single.partners[Player.P1]).toBe(only.card.id);
+    expect(isPlayerReady(single, Player.P1)).toBe(false);
+    expect(single.partners[Player.P1]).toEqual([]);
+    expect(submitPartnerPick(single, Player.P1, only.card.id)).toBeNull();
     expect(submitPartnerPick(single, Player.P1, only.card.id)).toBe('ALREADY_PICKED');
     finishTurn(single, Player.P2);
     const result = resolveCurrentLane(single)!;
     expect(result.p1Synergy).toEqual({ links: [only], bonus: only.bonus });
   });
 
-  it('with 2+ partners the player picks exactly one and only its % counts (no stacking)', () => {
+  it('with 2+ partners the player picks any subset and the bonuses stack (sum)', () => {
     const play = findLane(p => optionCounts(p, Player.P1).some(count => count >= 2));
     const main = currentOffer(play, Player.P1).find(id => partnerOptions(play, Player.P1, id).length >= 2)!;
     const options = partnerOptions(play, Player.P1, main);
@@ -249,25 +251,41 @@ describe('synergy partner from the whole hand', () => {
     expect(isPlayerReady(play, Player.P1)).toBe(false);
     const notOption = play.hands[Player.P1].flat().find(id => id !== main && !options.some(link => link.card.id === id))!;
     expect(submitPartnerPick(play, Player.P1, notOption)).toBe('INVALID_PARTNER');
-    // Choose the weaker partner on purpose: the stronger one must not be added.
-    const chosen = options[1];
-    expect(submitPartnerPick(play, Player.P1, chosen.card.id)).toBeNull();
-    expect(submitPartnerPick(play, Player.P1, options[0].card.id)).toBe('ALREADY_PICKED');
+    expect(submitPartnerPicks(play, Player.P1, [options[0].card.id, notOption])).toBe('INVALID_PARTNER');
+    expect(submitPartnerPicks(play, Player.P1, [options[0].card.id, options[0].card.id])).toBe('DUPLICATE_PARTNER');
+    // Choose every option: all of them count.
+    const chosen = options;
+    expect(submitPartnerPicks(play, Player.P1, [...chosen].reverse().map(link => link.card.id))).toBeNull();
+    expect(submitPartnerPicks(play, Player.P1, [])).toBe('ALREADY_PICKED');
     finishTurn(play, Player.P2);
     const result = resolveCurrentLane(play)!;
-    expect(result.p1Synergy.links.map(link => link.card.id)).toEqual([chosen.card.id]);
-    expect(result.p1Synergy.bonus).toBeCloseTo(chosen.bonus, 10);
-    expect(result.p1Total).toBeCloseTo(result.p1WinRate + result.orderBonus + chosen.bonus, 10);
-    expect(play.red[Player.P1]).toEqual(expect.arrayContaining([chosen.card.id]));
-    expect(play.red[Player.P1]).not.toContain(options[0].card.id);
+    const sum = chosen.reduce((total, link) => total + link.bonus, 0);
+    expect(result.p1Synergy.links.map(link => link.card.id)).toEqual(chosen.map(link => link.card.id));
+    expect(result.p1Synergy.bonus).toBeCloseTo(sum, 10);
+    expect(result.p1Total).toBeCloseTo(result.p1WinRate + sum, 10);
+    for (const link of chosen) expect(play.red[Player.P1]).toContain(link.card.id);
   });
 
-  it('on timeout picks a random main card, then the highest-% partner', () => {
+  it('choosing no partners is allowed and adds nothing', () => {
+    const play = findLane(p => optionCounts(p, Player.P1).some(count => count >= 1));
+    const main = currentOffer(play, Player.P1).find(id => partnerOptions(play, Player.P1, id).length >= 1)!;
+    expect(submitMainPick(play, Player.P1, main)).toBeNull();
+    expect(submitPartnerPicks(play, Player.P1, [])).toBeNull();
+    expect(isPlayerReady(play, Player.P1)).toBe(true);
+    finishTurn(play, Player.P2);
+    const redBefore = play.red[Player.P1].length;
+    const result = resolveCurrentLane(play)!;
+    expect(result.p1Synergy).toEqual({ links: [], bonus: 0 });
+    expect(result.p1Total).toBeCloseTo(result.p1WinRate, 10);
+    expect(play.red[Player.P1].length).toBe(redBefore);
+  });
+
+  it('on timeout picks a random main card, then only the single highest-% partner', () => {
     const play = findLane(p => optionCounts(p, Player.P1)[1] >= 2);
     expect(autoCompletePick(play, Player.P1, () => 0.99)).toBe(true);
     const main = currentOffer(play, Player.P1)[1];
     expect(play.mains[Player.P1]).toBe(main);
-    expect(play.partners[Player.P1]).toBe(partnerOptions(play, Player.P1, main)[0].card.id);
+    expect(play.partners[Player.P1]).toEqual([partnerOptions(play, Player.P1, main)[0].card.id]);
     expect(isPlayerReady(play, Player.P1)).toBe(true);
     expect(autoCompletePick(play, Player.P1)).toBe(false);
 
@@ -277,7 +295,7 @@ describe('synergy partner from the whole hand', () => {
     submitMainPick(open, Player.P1, lockedMain);
     autoCompletePick(open, Player.P1, () => 0.99);
     expect(open.mains[Player.P1]).toBe(lockedMain);
-    expect(open.partners[Player.P1]).toBe(partnerOptions(open, Player.P1, lockedMain)[0].card.id);
+    expect(open.partners[Player.P1]).toEqual([partnerOptions(open, Player.P1, lockedMain)[0].card.id]);
   });
 });
 
@@ -313,7 +331,7 @@ describe('red cards (used partners)', () => {
     const main = currentOffer(play, Player.P1)[0];
     const partner = partnerOptions(play, Player.P1, main)[0];
     finishTurn(play, Player.P1, 0);
-    expect(play.partners[Player.P1]).toBe(partner.card.id);
+    expect(play.partners[Player.P1]).toEqual([partner.card.id]);
     finishTurn(play, Player.P2);
     resolveCurrentLane(play);
     expect(play.red[Player.P1]).toContain(partner.card.id);
