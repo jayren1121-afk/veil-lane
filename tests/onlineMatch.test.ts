@@ -321,3 +321,63 @@ describe('server-enforced timers', () => {
     expect(match.data.round).toBe(3);
   });
 });
+
+describe('leaving a room', () => {
+  it('frees the seat while waiting so someone else can join', () => {
+    const match = OnlineMatch.create('W8IT', seeded(3));
+    const first = match.join('Alice', null, null, newToken);
+    expect(first.ok).toBe(true);
+    expect(match.leave(Player.P1, 0)).toBeNull();
+    expect(match.data.seats.P1).toBeUndefined();
+    expect(match.data.phase).toBe('waiting');
+    const next = match.join('Carol', null, null, newToken);
+    expect(next.ok && next.player).toBe(Player.P1);
+  });
+
+  it('mid-battle is a forfeit: match ends at once and the other player wins', () => {
+    const { match } = seatedMatch(0, 11);
+    const now = FIRST_ROUND_INTRO_MS;
+    playLane(match, now);
+    expect(match.leave(Player.P1, now + 500)).toBeNull();
+    expect(match.data.phase).toBe('matchEnd');
+    expect(match.data.matchWinner).toBe(Player.P2);
+    expect(match.nextDeadline()).toBeNull();
+    const view = match.viewFor(Player.P2, now + 600);
+    expect(view.phase).toBe('matchEnd');
+    expect(view.forfeitedBy).toBe(Player.P1);
+    expect(view.matchWinner).toBe(Player.P2);
+    // The leaver's account (Alice) gets the loss; Bob is a guest so nothing is recorded for him.
+    expect(match.outcomes()).toEqual([{ accountId: 'g:alice', outcome: 'loss' }]);
+    // Further actions are rejected and timers do nothing.
+    const hand = match.data.play!.hands[Player.P2];
+    expect(match.pick(Player.P2, hand[match.data.play!.laneIndex][0], now + 700)).toBe('NOT_BATTLE_PHASE');
+    expect(match.tick(now + 600_000)).toBe(false);
+  });
+
+  it('during the round summary is also a forfeit', () => {
+    const { match } = seatedMatch(0, 12);
+    let now = FIRST_ROUND_INTRO_MS;
+    while (match.data.phase === 'battle') {
+      playLane(match, now);
+      now += 1000;
+    }
+    expect(match.data.phase).toBe('summary');
+    expect(match.leave(Player.P2, now)).toBeNull();
+    expect(match.data.phase).toBe('matchEnd');
+    expect(match.data.matchWinner).toBe(Player.P1);
+    expect(match.viewFor(Player.P1, now).forfeitedBy).toBe(Player.P2);
+  });
+
+  it('after the match ends it changes nothing', () => {
+    const { match } = seatedMatch(0, 13);
+    match.leave(Player.P1, FIRST_ROUND_INTRO_MS);
+    expect(match.leave(Player.P2, FIRST_ROUND_INTRO_MS + 1)).toBeNull();
+    expect(match.data.matchWinner).toBe(Player.P2);
+    expect(match.data.forfeitedBy).toBe(Player.P1);
+  });
+
+  it('a normal finish has no forfeit', () => {
+    const { match } = seatedMatch(0, 14);
+    expect(match.viewFor(Player.P1, 0).forfeitedBy).toBeNull();
+  });
+});

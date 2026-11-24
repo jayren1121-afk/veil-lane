@@ -17,6 +17,7 @@ import { setupSceneMusic } from './musicToggle';
 import { sceneForPhase } from './onlineScene';
 import { addPanel, COLORS, drawBackground, glowText } from './theme';
 import { addTextButton, UiButton } from './uiButton';
+import { addBackButton } from './sceneNav';
 
 /** Create a room (big code + invite link) or join one with a 4-character code. */
 export class LobbyScene extends Phaser.Scene {
@@ -48,10 +49,11 @@ export class LobbyScene extends Phaser.Scene {
       fontSize: '38px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
     }).setOrigin(0.5);
     glowText(title);
-    addTextButton(this, 90, 40, 130, 40, t('lobby.back'), () => {
+    // ← back / Esc / browser back: leave the room (frees the seat) and go to the menu, no dialog.
+    addBackButton(this, () => {
       leaveOnline();
       this.scene.start('MenuScene');
-    }, { fontSize: 15 });
+    });
 
     const playerText = this.add.text(600, 122, '', {
       fontSize: '17px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',

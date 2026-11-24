@@ -6,6 +6,7 @@ import { SummaryScene } from './game/scenes/SummaryScene';
 import { LoginScene } from './game/scenes/LoginScene';
 import { LobbyScene } from './game/scenes/LobbyScene';
 import { captureInviteFromUrl } from './net/onlineClient';
+import { guardBrowserBack } from './game/scenes/sceneNav';
 
 captureInviteFromUrl();
 
@@ -24,3 +25,4 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 const game = new Phaser.Game(config);
+guardBrowserBack(game);

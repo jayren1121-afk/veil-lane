@@ -159,7 +159,9 @@ export function startOnline(roomCode: string): OnlineClient {
   return active;
 }
 
+/** Leave the room for good: tells the server (frees a waiting seat / forfeits mid-match), then closes. */
 export function leaveOnline(): void {
+  active?.send({ type: 'leave' });
   active?.close();
   active = null;
 }

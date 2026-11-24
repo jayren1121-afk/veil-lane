@@ -62,6 +62,8 @@ export interface OnlineMatchData {
   summaryDeadline: number | null;
   seats: Partial<Record<Player, Seat>>;
   resultRecorded: boolean;
+  /** Player who left mid-match (forfeit); missing in rooms saved before this field existed. */
+  forfeitedBy?: Player | null;
 }
 
 export type JoinResult = { ok: true; player: Player; sessionToken: string; rejoined: boolean } | { ok: false; code: 'ROOM_FULL' };
@@ -88,6 +90,7 @@ export class OnlineMatch {
       summaryDeadline: null,
       seats: {},
       resultRecorded: false,
+      forfeitedBy: null,
     }, random);
   }
 
@@ -226,6 +229,29 @@ export class OnlineMatch {
     return null;
   }
 
+  /**
+   * `player` leaves the room. While waiting, their seat is freed so someone else can join.
+   * Mid-match (battle or summary) it is a forfeit: the match ends at once and the other
+   * player wins. After the match it changes nothing.
+   */
+  leave(player: Player, now: number): string | null {
+    this.tick(now);
+    const data = this.data;
+    if (data.phase === 'waiting') {
+      delete data.seats[player];
+      return null;
+    }
+    if (data.phase === 'matchEnd') return null;
+    data.phase = 'matchEnd';
+    data.matchWinner = player === Player.P1 ? Player.P2 : Player.P1;
+    data.forfeitedBy = player;
+    data.turnStartsAt = null;
+    data.turnDeadline = null;
+    data.summaryDeadline = null;
+    data.ready = [];
+    return null;
+  }
+
   private nextRound(now: number): void {
     if (this.data.round >= TOTAL_ROUNDS) return;
     this.data.round += 1;
@@ -323,6 +349,7 @@ export class OnlineMatch {
       matchWinner: data.phase === 'matchEnd' ? data.matchWinner : null,
       ready: [...data.ready],
       summaryDeadline: data.summaryDeadline,
+      forfeitedBy: data.phase === 'matchEnd' ? data.forfeitedBy ?? null : null,
     };
   }
 

@@ -55,12 +55,15 @@ export interface MatchView {
   matchWinner: Player | null;
   ready: Player[];
   summaryDeadline: number | null;
+  /** Set when the match ended because this player left mid-match (the other player wins). */
+  forfeitedBy: Player | null;
 }
 
 export type ClientMessage =
   | { type: 'pick'; cardId: string }
   | { type: 'partner'; cardId: string }
   | { type: 'ready' }
+  | { type: 'leave' } // Leave the room: frees the seat while waiting, forfeits mid-match.
   | { type: 'ping' };
 
 export type ServerMessage =

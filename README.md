@@ -32,6 +32,11 @@ The public Worker for this project is already deployed at
   flip, partners pop in, the winner is shown, then the table is swept clear for the next lane. A lane title
   (e.g. 上路 1/5 · +5%) and a 5-dot record (green won / red lost / gold draw) show progress. Cards you already played
   stay in your hand, dimmed and tagged "已出 / PLAYED", because they can still be picked as partners.
+- **Going back**: every screen except the menu has a top-left "← 返回 / BACK" button; Esc and the browser back
+  button do the same (the browser back button never leaves the page). vs CPU exits straight to the menu. Online,
+  leaving mid-match asks first ("確定離開？對手會獲勝") and sends `leave` to the server, which ends the match as a forfeit
+  win for the opponent (recorded as a loss for the leaver); the opponent sees "你獲勝！". In a waiting room, leaving
+  frees your seat.
 - **Accounts**: "Sign in with Google" keeps a nickname and win/loss record. "Play as guest" (nickname only) works
   without any account, so judges can try it instantly.
 - **Battle timer**: each lane has a 20-second countdown per player covering both the main card and the partner pick

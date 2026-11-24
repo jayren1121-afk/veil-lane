@@ -190,10 +190,10 @@ export function countUp(
   });
 }
 
-export function drawHeader(scene: Phaser.Scene, title: string): void {
+export function drawHeader(scene: Phaser.Scene, title: string, x = 30): void {
   scene.add.rectangle(600, 35, 1200, 70, 0x0b2034, 0.78).setDepth(0);
   scene.add.rectangle(600, 71, 1200, 2, hexToInt(COLORS.cyan), 0.65).setDepth(1);
-  scene.add.text(30, 35, title, {
+  scene.add.text(x, 35, title, {
     fontSize: '22px',
     fontFamily: 'Arial',
     color: COLORS.title,

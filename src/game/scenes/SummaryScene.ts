@@ -20,7 +20,8 @@ import type { MatchView } from '../online/protocol';
 import type { OnlineClient } from '../../net/onlineClient';
 import { leaveOnline } from '../../net/onlineClient';
 import { refreshAccount } from '../../net/identity';
-import { bindOnlineScene, mirrorMatchState, sideLabel } from './onlineScene';
+import { bindOnlineScene, mirrorMatchState, opponentName, sideLabel } from './onlineScene';
+import { addBackButton, confirmDialog, showOpponentLeft } from './sceneNav';
 
 export class SummaryScene extends Phaser.Scene {
   constructor() {
@@ -62,6 +63,15 @@ export class SummaryScene extends Phaser.Scene {
   private onOnlineState(view: MatchView) {
     if (this.leaving) return;
     this.view = view;
+    if (view.phase === 'matchEnd' && view.forfeitedBy && view.forfeitedBy !== view.you) {
+      this.leaving = true;
+      void refreshAccount();
+      showOpponentLeft(this, opponentName(view), () => {
+        leaveOnline();
+        this.scene.start('MenuScene');
+      });
+      return;
+    }
     if (view.phase === 'battle') {
       this.leaving = true;
       this.scene.start('GameScene', { online: true });
@@ -73,6 +83,11 @@ export class SummaryScene extends Phaser.Scene {
     drawBackground(this);
     if (this.initOnline) {
       const client = bindOnlineScene(this, view => this.onOnlineState(view));
+      if (client?.state && client.state.phase === 'matchEnd' && client.state.forfeitedBy && client.state.forfeitedBy !== client.state.you) {
+        this.online = client;
+        this.onOnlineState(client.state);
+        return;
+      }
       if (!client?.state?.lastRound) {
         this.scene.start('LobbyScene');
         return;
@@ -88,12 +103,14 @@ export class SummaryScene extends Phaser.Scene {
       this.add.text(600, 400, t('summary.missing'), {
         fontSize: '24px', fontFamily: 'Arial', color: COLORS.text,
       }).setOrigin(0.5);
+      addBackButton(this, () => this.goBack());
       return;
     }
 
     this.laneCards.clear();
     this.revealRows.length = 0;
-    drawHeader(this, t('summary.title', { round: this.roundNumber }));
+    drawHeader(this, t('summary.title', { round: this.roundNumber }), 150);
+    addBackButton(this, () => this.goBack());
     this.add.text(1170, 35,
       `${this.nameOf(Player.P1)} ${this.state.p1RoundWins}　－　${this.state.p2RoundWins} ${this.nameOf(Player.P2)}`, {
         fontSize: '16px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
@@ -360,6 +377,23 @@ export class SummaryScene extends Phaser.Scene {
 
   private cardKey(player: Player, lane: Lane): string {
     return `${player}:${lane}`;
+  }
+
+  /** ← back / Esc / browser back: vs CPU or after the match go to the menu; online mid-match confirm (forfeit). */
+  private goBack() {
+    if (this.leaving) return;
+    const exit = () => {
+      this.leaving = true;
+      if (this.online) leaveOnline();
+      this.time.removeAllEvents();
+      this.tweens.killAll();
+      this.scene.start('MenuScene');
+    };
+    if (this.online && this.view?.phase === 'summary') {
+      confirmDialog(this, t('leave.title'), t('leave.body'), t('leave.confirm'), t('leave.cancel'), exit);
+    } else {
+      exit();
+    }
   }
 
   /** 你 / 電腦 vs CPU; online: 你 for this player, the opponent's nickname for the other. */

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { t } from '../i18n';
+import { addBackButton } from './sceneNav';
 import {
   getAccount,
   getGuestName,
@@ -34,7 +35,7 @@ export class LoginScene extends Phaser.Scene {
     this.add.text(600, 140, t('login.subtitle'), {
       fontSize: '17px', fontFamily: 'Arial', color: COLORS.muted,
     }).setOrigin(0.5);
-    addTextButton(this, 90, 40, 130, 40, t('login.back'), () => this.scene.start('MenuScene'), { fontSize: 15 });
+    addBackButton(this, () => this.scene.start('MenuScene'));
     this.messageText = this.add.text(600, 700, '', {
       fontSize: '16px', fontFamily: 'Arial', color: COLORS.gold, align: 'center',
     }).setOrigin(0.5);

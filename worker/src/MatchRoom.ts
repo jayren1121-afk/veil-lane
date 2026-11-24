@@ -108,6 +108,9 @@ export class MatchRoom extends DurableObject<Env> {
       case 'ready':
         error = this.match.ready(attachment.player, now);
         break;
+      case 'leave':
+        error = this.match.leave(attachment.player, now);
+        break;
       default:
         error = 'BAD_MESSAGE';
     }

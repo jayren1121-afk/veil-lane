@@ -35,6 +35,9 @@ import {
 import { CARDS, getLaneWinRate } from '../data/cards';
 import { CARD_BACK_KEY, cardArtPath, cardBackPath } from '../data/art';
 import { t } from '../i18n';
+import { addBackButton, confirmDialog, showOpponentLeft } from './sceneNav';
+import { leaveOnline } from '../../net/onlineClient';
+import { refreshAccount } from '../../net/identity';
 import { createCardBack, createCardFace, CardView } from './cardView';
 import { setupSceneMusic } from './musicToggle';
 import type { MatchView } from '../online/protocol';
@@ -257,6 +260,7 @@ export class GameScene extends Phaser.Scene {
       this.bottomPlayer = Player.P1;
     }
     this.createBoard();
+    addBackButton(this, () => this.goBack());
     this.turnTimer = new TurnTimerView(this, SIDE_X, 440);
     this.time.addEvent({ delay: 200, loop: true, callback: () => this.updateTimer() });
 
@@ -278,6 +282,48 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.startLane();
     }
+  }
+
+  // ---------- leaving ----------
+
+  /**
+   * ← back / Esc / browser back. vs CPU: straight to the menu (timers and tweens stopped).
+   * Online mid-match: confirm first, since leaving forfeits; after the match: just leave.
+   */
+  private goBack() {
+    if (!this.online) {
+      this.exitToMenu();
+      return;
+    }
+    if (this.leavingOnline) return;
+    const phase = this.view?.phase;
+    if (phase === 'battle' || phase === 'summary') {
+      confirmDialog(this, t('leave.title'), t('leave.body'), t('leave.confirm'), t('leave.cancel'), () => this.exitToMenu());
+    } else {
+      this.exitToMenu();
+    }
+  }
+
+  private exitToMenu() {
+    this.leavingOnline = true;
+    if (this.online) leaveOnline();
+    this.time.removeAllEvents();
+    this.tweens.killAll();
+    this.play = null;
+    this.localDeadline = null;
+    this.scene.start('MenuScene');
+  }
+
+  /** The opponent left mid-match: we win. */
+  private onOpponentLeft(view: MatchView) {
+    this.leavingOnline = true;
+    this.time.removeAllEvents();
+    this.turnTimer?.hide();
+    void refreshAccount();
+    showOpponentLeft(this, opponentName(view), () => {
+      leaveOnline();
+      this.scene.start('MenuScene');
+    });
   }
 
   // ---------- labels ----------
@@ -353,10 +399,10 @@ export class GameScene extends Phaser.Scene {
   // ---------- board ----------
 
   private createBoard() {
-    this.add.text(28, 22, t('game.title', { round: this.currentRound }), {
+    this.add.text(144, 22, t('game.title', { round: this.currentRound }), {
       fontSize: '20px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
     }).setOrigin(0, 0.5).setDepth(10);
-    this.add.text(28, 48, t('game.lead', { player: this.label(this.lead) }), {
+    this.add.text(144, 48, t('game.lead', { player: this.label(this.lead) }), {
       fontSize: '13px', fontFamily: 'Arial', color: COLORS.muted,
     }).setOrigin(0, 0.5).setDepth(10);
     this.scoreText = this.add.text(1172, 24, this.scoreLine(), {
@@ -1008,6 +1054,10 @@ export class GameScene extends Phaser.Scene {
 
   private onOnlineState(view: MatchView) {
     if (this.leavingOnline) return;
+    if (view.phase === 'matchEnd' && view.forfeitedBy && view.forfeitedBy !== view.you) {
+      this.onOpponentLeft(view);
+      return;
+    }
     if (view.phase === 'waiting') {
       this.leavingOnline = true;
       this.scene.start('LobbyScene');

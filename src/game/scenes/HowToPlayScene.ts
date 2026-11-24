@@ -7,6 +7,7 @@ import {
   TOTAL_ROUNDS,
 } from '../rules';
 import { t } from '../i18n';
+import { addBackButton } from './sceneNav';
 import { setupSceneMusic } from './musicToggle';
 import { addButton, addPanel, COLORS, drawBackground, drawHeader, hexToInt, laneColor } from './theme';
 
@@ -64,7 +65,8 @@ export class HowToPlayScene extends Phaser.Scene {
     this.pageIndex = 0;
     setupSceneMusic(this);
     drawBackground(this);
-    drawHeader(this, t('tutorial.title'));
+    drawHeader(this, t('tutorial.title'), 150);
+    addBackButton(this, () => this.scene.start('MenuScene'));
     addPanel(this, 600, 385, 1100, 590, 0x0b2034).setDepth(-1);
 
     const close = addButton(this, 1150, 35, 44, 44, 0x17334a).setDepth(10);
@@ -98,7 +100,6 @@ export class HowToPlayScene extends Phaser.Scene {
     }).setOrigin(0.5);
     this.input.keyboard?.on('keydown-LEFT', this.onLeft, this);
     this.input.keyboard?.on('keydown-RIGHT', this.onRight, this);
-    this.input.keyboard?.on('keydown-ESC', this.onEscape, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
     this.renderPage();
   }
@@ -111,14 +112,9 @@ export class HowToPlayScene extends Phaser.Scene {
     this.changePage(1);
   }
 
-  private onEscape() {
-    this.scene.start('MenuScene');
-  }
-
   private onShutdown() {
     this.input.keyboard?.off('keydown-LEFT', this.onLeft, this);
     this.input.keyboard?.off('keydown-RIGHT', this.onRight, this);
-    this.input.keyboard?.off('keydown-ESC', this.onEscape, this);
   }
 
   private changePage(direction: number) {
