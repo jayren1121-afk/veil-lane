@@ -2,7 +2,7 @@ export * from './types';
 export * from './constants';
 export * from './duel';
 export * from './match';
-export * from './draft';
+export * from './lanePlay';
 export * from './turn';
 export * from './synergy';
 export * from './reveal';

@@ -63,9 +63,9 @@ describe('language selection', () => {
 
   it('substitutes template parameters in the selected language', () => {
     setLanguage('en');
-    expect(t('draft.title', { round: 2 })).toBe('ROUND 2 — DRAFT');
+    expect(t('game.title', { round: 2 })).toBe('ROUND 2 | LANE BY LANE');
     setLanguage('zh');
-    expect(t('draft.title', { round: 2 })).toBe('第 2 局 — 選卡階段');
+    expect(t('game.title', { round: 2 })).toBe('第 2 局｜逐路對決');
   });
 
   it('defines non-empty translations with matching placeholders for every key', () => {

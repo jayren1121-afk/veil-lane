@@ -170,7 +170,7 @@ export class LobbyScene extends Phaser.Scene {
       this.statusText.setText(t('lobby.waiting'));
       return;
     }
-    this.scene.start(sceneForPhase(view.phase), { online: true, showCoin: view.phase === 'draft' && view.round === 1 });
+    this.scene.start(sceneForPhase(view.phase), { online: true, showCoin: view.phase === 'battle' && view.round === 1 && (view.battle?.revealed.length ?? 0) === 0 });
   }
 
   private async copyInvite() {

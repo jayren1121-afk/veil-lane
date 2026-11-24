@@ -1,16 +1,12 @@
 import Phaser from 'phaser';
 import type { MatchView } from '../online/protocol';
-import { buildDraftSlots, DraftState, GamePhase, initialDraftBanks, MatchState, Player, otherPlayer } from '../rules';
+import { GamePhase, MatchState, Player, otherPlayer } from '../rules';
 import { t } from '../i18n';
 import { getOnlineClient, OnlineClient } from '../../net/onlineClient';
 import { COLORS } from './theme';
 
-/** Placeholder id for an opponent pick whose card stays hidden on the client. */
-export const HIDDEN_CARD_ID = '__hidden__';
-
 export function sceneForPhase(phase: MatchView['phase']): string {
   switch (phase) {
-    case 'draft': return 'DraftScene';
     case 'battle': return 'GameScene';
     case 'summary':
     case 'matchEnd': return 'SummaryScene';
@@ -21,8 +17,6 @@ export function sceneForPhase(phase: MatchView['phase']): string {
 /** Client-side MatchState mirror built only from what the server chose to show this player. */
 export function mirrorMatchState(view: MatchView): MatchState {
   return {
-    p1Hand: [],
-    p2Hand: [],
     p1UsedCardIds: view.you === Player.P1 ? new Set(view.usedCardIds) : new Set(),
     p2UsedCardIds: view.you === Player.P2 ? new Set(view.usedCardIds) : new Set(),
     currentRound: view.round,
@@ -31,27 +25,8 @@ export function mirrorMatchState(view: MatchView): MatchState {
     p2RoundWins: view.score.P2,
     roundResults: view.lastRound ? [view.lastRound] : [],
     matchWinner: view.matchWinner,
-    phase: view.phase === 'matchEnd' ? GamePhase.MatchEnd : view.phase === 'battle' ? GamePhase.Reveal : GamePhase.Draft,
+    phase: view.phase === 'matchEnd' ? GamePhase.MatchEnd : view.phase === 'battle' ? GamePhase.Reveal : GamePhase.Place,
   };
-}
-
-/** Draft mirror: own picks are real ids, opponent picks are HIDDEN_CARD_ID placeholders. */
-export function mirrorDraftState(view: MatchView, serverNow: number): DraftState {
-  const slots = buildDraftSlots(view.round);
-  const draft = view.draft;
-  for (const slot of slots) {
-    if (!draft) continue;
-    if (slot.player === view.you) slot.cardId = draft.myPicks[slot.lane] ?? null;
-    else slot.cardId = draft.opponentLocked.includes(slot.lane) ? HIDDEN_CARD_ID : null;
-  }
-  return {
-    slots,
-    currentIndex: draft ? draft.currentIndex : slots.length,
-    timeRemainingMs: draft?.timeRemainingMs
-      ? { ...draft.timeRemainingMs }
-      : initialDraftBanks(),
-  };
-  void serverNow;
 }
 
 export function playerName(view: MatchView, player: Player): string {

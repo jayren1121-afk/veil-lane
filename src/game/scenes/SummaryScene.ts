@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { isMatchOver, Lane, LANE_ORDER, MatchState, ObviousSynergy, Player, RoundResult } from '../rules';
+import { isMatchOver, Lane, LANE_ORDER, LaneRevealResult, LaneSynergyLink, MatchState, Player, RoundResult } from '../rules';
 import { CARDS } from '../data/cards';
 import { cardArtPath } from '../data/art';
 import { t } from '../i18n';
@@ -62,10 +62,7 @@ export class SummaryScene extends Phaser.Scene {
   private onOnlineState(view: MatchView) {
     if (this.leaving) return;
     this.view = view;
-    if (view.phase === 'draft') {
-      this.leaving = true;
-      this.scene.start('DraftScene', { online: true });
-    } else if (view.phase === 'battle') {
+    if (view.phase === 'battle') {
       this.leaving = true;
       this.scene.start('GameScene', { online: true });
     }
@@ -144,7 +141,7 @@ export class SummaryScene extends Phaser.Scene {
         fontSize: '15px', fontFamily: 'Arial', color: COLORS.win, fontStyle: 'bold',
       }).setOrigin(0.5));
       row.add(this.add.text(515, y + 11,
-        `${(laneResult.p1WinRate * 100).toFixed(1)}% + ${(laneResult.orderBonus * 100).toFixed(0)}%`, {
+        this.laneBreakdown(laneResult, laneResult.p1WinRate, laneResult.p1Synergy.bonus), {
           fontSize: '13px', fontFamily: 'Arial', color: p1Won ? COLORS.win : COLORS.muted,
           fontStyle: p1Won ? 'bold' : 'normal',
         }).setOrigin(0.5));
@@ -152,7 +149,7 @@ export class SummaryScene extends Phaser.Scene {
         fontSize: '15px', fontFamily: 'Arial', color: COLORS.win, fontStyle: 'bold',
       }).setOrigin(0.5));
       row.add(this.add.text(685, y + 11,
-        `${(laneResult.p2WinRate * 100).toFixed(1)}% + ${(laneResult.orderBonus * 100).toFixed(0)}%`, {
+        this.laneBreakdown(laneResult, laneResult.p2WinRate, laneResult.p2Synergy.bonus), {
           fontSize: '13px', fontFamily: 'Arial', color: p2Won ? COLORS.win : COLORS.muted,
           fontStyle: p2Won ? 'bold' : 'normal',
         }).setOrigin(0.5));
@@ -172,27 +169,33 @@ export class SummaryScene extends Phaser.Scene {
     this.playSynergySequence();
   }
 
+  private laneBreakdown(result: LaneRevealResult, winRate: number, synergy: number): string {
+    const base = `${(winRate * 100).toFixed(1)}% + ${(result.orderBonus * 100).toFixed(0)}%`;
+    return synergy > 0 ? `${base} + ✦${(synergy * 100).toFixed(0)}%` : base;
+  }
+
   private playSynergySequence() {
-    const effects = [
-      ...this.result.p1Synergy.obviousSynergies.map(synergy => ({ player: Player.P1, synergy })),
-      ...this.result.p2Synergy.obviousSynergies.map(synergy => ({ player: Player.P2, synergy })),
-    ];
+    const effects: { player: Player; lane: Lane; link: LaneSynergyLink }[] = [];
+    for (const laneResult of this.result.laneResults) {
+      laneResult.p1Synergy.links.forEach(link => effects.push({ player: Player.P1, lane: laneResult.lane, link }));
+      laneResult.p2Synergy.links.forEach(link => effects.push({ player: Player.P2, lane: laneResult.lane, link }));
+    }
     effects.forEach((effect, index) => {
-      this.time.delayedCall(1550 + index * 520, () => this.animateSynergy(effect.player, effect.synergy, index));
+      this.time.delayedCall(1550 + index * 520, () => this.animateSynergy(effect.player, effect.lane, effect.link, index));
     });
     this.time.delayedCall(1900 + effects.length * 520, () => this.showRoundTotals());
   }
 
-  private animateSynergy(player: Player, synergy: ObviousSynergy, index: number) {
-    const first = this.laneCards.get(this.cardKey(player, synergy.laneA));
-    const second = this.laneCards.get(this.cardKey(player, synergy.laneB));
+  private animateSynergy(player: Player, lane: Lane, link: LaneSynergyLink, index: number) {
+    const first = this.laneCards.get(this.cardKey(player, link.lane));
+    const second = this.laneCards.get(this.cardKey(player, lane));
     if (!first || !second) return;
     const color = player === Player.P1 ? COLORS.p1 : COLORS.p2;
     [first, second].forEach(card => {
       card.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
       this.tweens.add({ targets: card.container, scale: 1.08, duration: 220, yoyo: true, ease: 'Sine.Out' });
     });
-    this.drawSynergyLink(player, synergy.laneA, synergy.laneB, color, index);
+    this.drawSynergyLink(player, link.lane, lane, color, index);
   }
 
   private drawSynergyLink(player: Player, laneA: Lane, laneB: Lane, color: string, index: number) {
@@ -233,10 +236,12 @@ export class SummaryScene extends Phaser.Scene {
   }
 
   private showRoundTotals() {
-    const p1ComboText = this.formatSynergies(this.result.p1Synergy.obviousSynergies);
-    const p2ComboText = this.formatSynergies(this.result.p2Synergy.obviousSynergies);
-    const p1Bonus = this.result.p1Synergy.bonus * 100;
-    const p2Bonus = this.result.p2Synergy.bonus * 100;
+    const p1ComboText = this.formatSynergies(Player.P1);
+    const p2ComboText = this.formatSynergies(Player.P2);
+    const sumBonus = (player: Player) => this.result.laneResults.reduce((sum, item) =>
+      sum + (player === Player.P1 ? item.p1Synergy.bonus : item.p2Synergy.bonus), 0) * 100;
+    const p1Bonus = sumBonus(Player.P1);
+    const p2Bonus = sumBonus(Player.P2);
     const p1Panel = addPanel(this, 310, 642, 520, 70, 0x0b2034).setDepth(35);
     const p2Panel = addPanel(this, 890, 642, 520, 70, 0x0b2034).setDepth(35);
     const p1Text = this.add.text(310, 628, t('summary.synergyBonus', { player: 'P1', bonus: p1Bonus.toFixed(1) }), {
@@ -310,8 +315,8 @@ export class SummaryScene extends Phaser.Scene {
         }
         return;
       }
-      if (matchOver) this.scene.start('DraftScene', {});
-      else this.scene.start('DraftScene', { matchState: this.state, round: this.state.currentRound });
+      if (matchOver) this.scene.start('GameScene', {});
+      else this.scene.start('GameScene', { matchState: this.state, round: this.state.currentRound });
     };
     button.on('pointerdown', proceed);
     label.setInteractive({ useHandCursor: true }).on('pointerdown', proceed);
@@ -331,11 +336,17 @@ export class SummaryScene extends Phaser.Scene {
     }
   }
 
-  private formatSynergies(synergies: ObviousSynergy[]): string {
-    if (synergies.length === 0) return t('summary.noSynergy');
-    const pairs = synergies.slice(0, 2).map(item => `${item.cardA.name}＋${item.cardB.name}`);
-    if (synergies.length > 2) pairs.push(t('summary.moreSynergies', { count: synergies.length - 2 }));
-    return `✦ ${pairs.join('　✦ ')}`;
+  private formatSynergies(player: Player): string {
+    const pairs: string[] = [];
+    for (const item of this.result.laneResults) {
+      const card = player === Player.P1 ? item.p1Card : item.p2Card;
+      const synergy = player === Player.P1 ? item.p1Synergy : item.p2Synergy;
+      for (const link of synergy.links) pairs.push(`${link.card.name}＋${card.name} +${Math.round(link.bonus * 100)}%`);
+    }
+    if (pairs.length === 0) return t('summary.noSynergy');
+    const shown = pairs.slice(0, 2);
+    if (pairs.length > 2) shown.push(t('summary.moreSynergies', { count: pairs.length - 2 }));
+    return `✦ ${shown.join('　✦ ')}`;
   }
 
   private cardKey(player: Player, lane: Lane): string {

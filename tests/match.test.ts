@@ -1,235 +1,223 @@
 import { describe, it, expect } from 'vitest';
 import {
+  autoLanePick,
+  bothPicked,
+  cardById,
   createMatchState,
-  runDraft,
-  placeCards,
-  resolveRound,
-  canPlaceCard,
-  getAvailableCards,
-  isMatchOver,
-  getScoreString,
+  createRoundPlay,
+  currentPlayLane,
+  dealLaneOffer,
   GamePhase,
-  Placement,
-  Player,
+  getScoreString,
+  isMatchOver,
+  isRoundPlayComplete,
   Lane,
+  LANE_ORDER,
+  offerSynergies,
+  OFFERS_PER_LANE,
+  Player,
+  recordRoundResult,
+  resolveCurrentLane,
+  resolveRound,
+  resolveRoundScores,
+  submitLanePick,
+  summarizeRound,
+  usedCardIdsFor,
 } from '../src/game/rules';
+import { CARDS } from '../src/game/data/cards';
+
+function seeded(seed: number): () => number {
+  let value = seed >>> 0;
+  return () => {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    return value / 4294967296;
+  };
+}
+
+const noneUsed = () => ({ [Player.P1]: [] as string[], [Player.P2]: [] as string[] }) as Record<Player, string[]>;
+
+/** Play a full local round, always taking the offer at `choice`. */
+function playRound(state: ReturnType<typeof createMatchState>, random: () => number, choice = 0) {
+  const play = createRoundPlay(state.currentRound, {
+    [Player.P1]: state.p1UsedCardIds,
+    [Player.P2]: state.p2UsedCardIds,
+  } as Record<Player, Set<string>>, random);
+  while (!isRoundPlayComplete(play)) {
+    for (const player of [Player.P1, Player.P2]) {
+      const offer = play.offers[player];
+      expect(submitLanePick(play, player, offer[Math.min(choice, offer.length - 1)])).toBeNull();
+    }
+    expect(resolveCurrentLane(play, random)).not.toBeNull();
+  }
+  const result = summarizeRound(play.results);
+  recordRoundResult(state, result);
+  return { play, result };
+}
 
 describe('Match Engine', () => {
-  it('creates empty match state', () => {
+  it('creates an empty match state with no draft phase', () => {
     const state = createMatchState();
-    expect(state.p1Hand).toEqual([]);
-    expect(state.p2Hand).toEqual([]);
     expect(state.currentRound).toBe(1);
     expect(state.p1RoundWins).toBe(0);
     expect(state.p2RoundWins).toBe(0);
     expect(state.matchWinner).toBeNull();
-  });
-
-  it('draft deals cards to both players', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    expect(state.p1Hand.length).toBeGreaterThan(0);
-    expect(state.p2Hand.length).toBeGreaterThan(0);
-    // No duplicate cards between players
-    const p1Ids = new Set(state.p1Hand.map((c) => c.id));
-    const p2Ids = new Set(state.p2Hand.map((c) => c.id));
-    for (const id of p1Ids) {
-      expect(p2Ids.has(id)).toBe(false);
-    }
-  });
-
-  it('Fearless blocks used cards', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    const card = state.p1Hand[0];
-    state.p1UsedCardIds.add(card.id);
-
-    expect(canPlaceCard(card, card.lanes[0], state, Player.P1)).toBe(false);
-    expect(canPlaceCard(card, card.lanes[0], state, Player.P2)).toBe(true);
-  });
-
-  it('placeCards validates lane coverage', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    const placements: Placement[] = [];
-    for (let i = 0; i < 4 && i < state.p1Hand.length; i++) {
-      const lane = [Lane.Top, Lane.Jungle, Lane.Mid, Lane.Bot][i];
-      const card = state.p1Hand.find((c) => c.lanes.includes(lane));
-      if (card) placements.push({ card, lane });
-    }
-
-    const error = placeCards(Player.P1, placements, state);
-    expect(error).toContain('Must place exactly 5');
-  });
-
-  it('placeCards validates one card per lane', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    const placements: Placement[] = [];
-    const topCards = state.p1Hand.filter((c) => c.lanes.includes(Lane.Top));
-    if (topCards.length >= 2) {
-      placements.push({ card: topCards[0], lane: Lane.Top });
-      placements.push({ card: topCards[1], lane: Lane.Top });
-    }
-    while (placements.length < 5) {
-      placements.push({ card: state.p1Hand[0], lane: Lane.Mid });
-    }
-
-    const error = placeCards(Player.P1, placements, state);
-    expect(error).toContain('exactly 1 card');
-  });
-
-  it('placeCards removes cards from hand (Fearless)', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    const handSizeBefore = state.p1Hand.length;
-
-    const placements: Placement[] = [];
-    const usedCardIds = new Set<string>();
-    const lanes = [Lane.Top, Lane.Jungle, Lane.Mid, Lane.Bot, Lane.Support];
-    for (const lane of lanes) {
-      const card = state.p1Hand.find((c) => c.lanes.includes(lane) && !usedCardIds.has(c.id));
-      if (card) {
-        placements.push({ card, lane });
-        usedCardIds.add(card.id);
-      }
-    }
-
-    if (placements.length === 5) {
-      const error = placeCards(Player.P1, placements, state);
-      if (!error) {
-        expect(state.p1Hand.length).toBe(handSizeBefore - placements.length);
-        for (const p of placements) {
-          expect(state.p1UsedCardIds.has(p.card.id)).toBe(true);
-          expect(state.p2UsedCardIds.has(p.card.id)).toBe(false);
-        }
-      }
-    }
-  });
-
-  it('resolveRound includes both teams\' matchup, order and synergy components', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    // Build valid placements for both players
-    const lanes = [Lane.Top, Lane.Jungle, Lane.Mid, Lane.Bot, Lane.Support];
-    const p1Placements: Placement[] = [];
-    const p2Placements: Placement[] = [];
-
-    for (const lane of lanes) {
-      const p1Card = state.p1Hand.find((c) => c.lanes.includes(lane));
-      const p2Card = state.p2Hand.find((c) => c.lanes.includes(lane));
-      if (p1Card) p1Placements.push({ card: p1Card, lane });
-      if (p2Card) p2Placements.push({ card: p2Card, lane });
-    }
-
-    if (p1Placements.length === 5 && p2Placements.length === 5) {
-      const result = resolveRound(p1Placements, p2Placements, state);
-      expect(result.p1MatchupAvg + result.p2MatchupAvg).toBeCloseTo(1, 5);
-      expect(result.p1WinRate).toBeCloseTo(result.p1MatchupAvg + result.orderBonusAvg + result.p1Synergy.bonus, 10);
-      expect(result.p2WinRate).toBeCloseTo(result.p2MatchupAvg + result.orderBonusAvg + result.p2Synergy.bonus, 10);
-      expect(result.p1WinRate).toBeGreaterThan(0);
-      expect(result.p2WinRate).toBeGreaterThan(0);
-    }
-  });
-
-  it('resolveRound updates match state', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    const lanes = [Lane.Top, Lane.Jungle, Lane.Mid, Lane.Bot, Lane.Support];
-    const p1Placements: Placement[] = [];
-    const p2Placements: Placement[] = [];
-
-    for (const lane of lanes) {
-      const p1Card = state.p1Hand.find((c) => c.lanes.includes(lane));
-      const p2Card = state.p2Hand.find((c) => c.lanes.includes(lane));
-      if (p1Card) p1Placements.push({ card: p1Card, lane });
-      if (p2Card) p2Placements.push({ card: p2Card, lane });
-    }
-
-    if (p1Placements.length === 5 && p2Placements.length === 5) {
-      resolveRound(p1Placements, p2Placements, state);
-      expect(state.roundResults.length).toBe(1);
-      expect(state.p1RoundWins + state.p2RoundWins).toBe(1);
-    }
+    expect(state.phase).toBe(GamePhase.Place);
+    expect(state.p1UsedCardIds.size).toBe(0);
   });
 
   it('getScoreString returns correct format', () => {
     const state = createMatchState();
     expect(getScoreString(state)).toBe('P1: 0 - P2: 0');
-
     state.p1RoundWins = 1;
     state.p2RoundWins = 1;
     expect(getScoreString(state)).toBe('P1: 1 - P2: 1');
   });
 
-  it('isMatchOver returns false initially', () => {
-    const state = createMatchState();
-    expect(isMatchOver(state)).toBe(false);
-  });
-
-  it('isMatchOver returns true after all 3 rounds played', () => {
-    const state = createMatchState();
-    state.p1RoundWins = 2;
-    state.p2RoundWins = 1;
-    state.currentRound = 3;
-    state.matchWinner = Player.P1;
-    state.phase = GamePhase.MatchEnd;
-    expect(isMatchOver(state)).toBe(true);
-  });
-
   it('treats a completed tied match as over', () => {
     const state = createMatchState(1);
+    expect(isMatchOver(state)).toBe(false);
     state.currentRound = 3;
     state.phase = GamePhase.MatchEnd;
     state.matchWinner = null;
     expect(isMatchOver(state)).toBe(true);
   });
+});
 
-  it('match plays all 3 rounds even if one player wins early', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    // Simulate 3 rounds - P1 wins all
-    const lanes = [Lane.Top, Lane.Jungle, Lane.Mid, Lane.Bot, Lane.Support];
-    for (let round = 1; round <= 3; round++) {
-      const p1Placements: Placement[] = [];
-      const p2Placements: Placement[] = [];
-
-      for (const lane of lanes) {
-        const p1Card = state.p1Hand.find((c) => c.lanes.includes(lane));
-        const p2Card = state.p2Hand.find((c) => c.lanes.includes(lane));
-        if (p1Card) p1Placements.push({ card: p1Card, lane });
-        if (p2Card) p2Placements.push({ card: p2Card, lane });
-      }
-
-      if (p1Placements.length === 5 && p2Placements.length === 5) {
-        resolveRound(p1Placements, p2Placements, state);
-      }
-
-      // After round 1 and 2, match should NOT be over
-      if (round < 3) {
-        expect(isMatchOver(state)).toBe(false);
+describe('lane dealing', () => {
+  it('deals two distinct cards that are legal in the lane and not blocked', () => {
+    const blocked = CARDS.filter(card => card.lanes.includes(Lane.Top)).slice(0, 5).map(card => card.id);
+    for (let seed = 1; seed < 30; seed++) {
+      const offer = dealLaneOffer(Lane.Top, blocked, seeded(seed));
+      expect(offer).toHaveLength(OFFERS_PER_LANE);
+      expect(new Set(offer).size).toBe(OFFERS_PER_LANE);
+      for (const id of offer) {
+        expect(cardById(id)!.lanes).toContain(Lane.Top);
+        expect(blocked).not.toContain(id);
       }
     }
-    // After round 3, match should be over
-    expect(isMatchOver(state)).toBe(true);
-    expect(state.roundResults.length).toBe(3);
   });
 
-  it('getAvailableCards filters by lane validity', () => {
-    const state = createMatchState();
-    runDraft(state);
-
-    const available = getAvailableCards(Player.P1, Lane.Top, state);
-    for (const card of available) {
-      expect(card.lanes.includes(Lane.Top)).toBe(true);
+  it('gives each player their own independent offers for the current lane', () => {
+    let differed = false;
+    for (let seed = 1; seed < 20; seed++) {
+      const play = createRoundPlay(1, noneUsed(), seeded(seed));
+      expect(currentPlayLane(play)).toBe(Lane.Top);
+      expect(play.offers[Player.P1]).toHaveLength(2);
+      expect(play.offers[Player.P2]).toHaveLength(2);
+      if (play.offers[Player.P1].join() !== play.offers[Player.P2].join()) differed = true;
     }
+    expect(differed).toBe(true);
+  });
+
+  it('only accepts one of the player\'s own offered cards, once per lane', () => {
+    const play = createRoundPlay(1, noneUsed(), seeded(5));
+    const foreign = CARDS.find(card => card.lanes.includes(Lane.Top) && !play.offers[Player.P1].includes(card.id))!;
+    expect(submitLanePick(play, Player.P1, foreign.id)).toBe('INVALID_PICK');
+    expect(submitLanePick(play, Player.P1, play.offers[Player.P1][0])).toBeNull();
+    expect(submitLanePick(play, Player.P1, play.offers[Player.P1][1])).toBe('ALREADY_PICKED');
+    expect(bothPicked(play)).toBe(false);
+    expect(resolveCurrentLane(play)).toBeNull();
+  });
+
+  it('auto-picks one of the offered cards on timeout', () => {
+    const play = createRoundPlay(1, noneUsed(), seeded(8));
+    const picked = autoLanePick(play, Player.P2, () => 0.99);
+    expect(picked).toBe(play.offers[Player.P2][1]);
+    expect(autoLanePick(play, Player.P2)).toBeNull();
+  });
+
+  it('plays the five lanes in order and resolves each with order bonus and synergy', () => {
+    const play = createRoundPlay(1, noneUsed(), seeded(11));
+    const lanes: Lane[] = [];
+    while (!isRoundPlayComplete(play)) {
+      lanes.push(currentPlayLane(play)!);
+      submitLanePick(play, Player.P1, play.offers[Player.P1][0]);
+      submitLanePick(play, Player.P2, play.offers[Player.P2][1]);
+      const result = resolveCurrentLane(play)!;
+      expect(result.p1Total).toBeCloseTo(result.p1WinRate + result.orderBonus + result.p1Synergy.bonus, 10);
+      expect(result.p2Total).toBeCloseTo(result.p2WinRate + result.orderBonus + result.p2Synergy.bonus, 10);
+    }
+    expect(lanes).toEqual(LANE_ORDER);
+    expect(play.results.map(result => result.orderBonus)).toEqual([0.05, 0.04, 0.03, 0.02, 0.01]);
+    // Live scoring matches recomputing the round from the final line-ups.
+    const replay = resolveRoundScores(
+      play.results.map(result => ({ card: result.p1Card, lane: result.lane })),
+      play.results.map(result => ({ card: result.p2Card, lane: result.lane })),
+    );
+    expect(replay.p1WinRate).toBeCloseTo(summarizeRound(play.results).p1WinRate, 10);
+  });
+
+  it('shows an offer\'s synergy from the player\'s already-played cards only', () => {
+    // Search seeds until an offer carries synergy, then check it against played cards.
+    let found = false;
+    for (let seed = 1; seed < 400 && !found; seed++) {
+      const random = seeded(seed);
+      const play = createRoundPlay(1, noneUsed(), random);
+      while (!isRoundPlayComplete(play) && !found) {
+        const synergies = offerSynergies(play, Player.P1);
+        for (const synergy of Object.values(synergies)) {
+          if (synergy.bonus <= 0) continue;
+          found = true;
+          for (const link of synergy.links) expect(play.played[Player.P1]).toContain(link.card.id);
+          expect(synergy.bonus).toBeLessThanOrEqual(0.05 + 0.04 + 0.03 + 0.02 + 1e-9);
+        }
+        submitLanePick(play, Player.P1, play.offers[Player.P1][0]);
+        submitLanePick(play, Player.P2, play.offers[Player.P2][0]);
+        resolveCurrentLane(play, random);
+      }
+    }
+    expect(found).toBe(true);
+  });
+});
+
+describe('Fearless across the match', () => {
+  it('never deals a card the player already played, across lanes and rounds', () => {
+    const random = seeded(42);
+    const state = createMatchState(3);
+    const played: Record<Player, string[]> = { [Player.P1]: [], [Player.P2]: [] } as Record<Player, string[]>;
+    for (let round = 1; round <= 3; round++) {
+      const play = createRoundPlay(state.currentRound, {
+        [Player.P1]: state.p1UsedCardIds,
+        [Player.P2]: state.p2UsedCardIds,
+      } as Record<Player, Set<string>>, random);
+      while (!isRoundPlayComplete(play)) {
+        for (const player of [Player.P1, Player.P2]) {
+          for (const id of play.offers[player]) expect(played[player]).not.toContain(id);
+          const pick = play.offers[player][0];
+          played[player].push(pick);
+          submitLanePick(play, player, pick);
+        }
+        resolveCurrentLane(play, random);
+      }
+      recordRoundResult(state, summarizeRound(play.results));
+    }
+    expect(new Set(played[Player.P1]).size).toBe(15);
+    expect(new Set(played[Player.P2]).size).toBe(15);
+    expect(usedCardIdsFor(state, Player.P1).size).toBe(15);
+    expect(isMatchOver(state)).toBe(true);
+    expect(state.roundResults).toHaveLength(3);
+  });
+
+  it('plays all 3 rounds even if one player wins early', () => {
+    const state = createMatchState();
+    const random = seeded(9);
+    for (let round = 1; round <= 3; round++) {
+      playRound(state, random, round % 2);
+      if (round < 3) expect(isMatchOver(state)).toBe(false);
+    }
+    expect(isMatchOver(state)).toBe(true);
+    expect(state.p1RoundWins + state.p2RoundWins).toBeLessThanOrEqual(3);
+  });
+
+  it('resolveRound records the round and marks played cards as used', () => {
+    const state = createMatchState();
+    const pick = (lane: Lane, offset: number) => CARDS.filter(card => card.lanes.includes(lane))[offset];
+    const p1 = LANE_ORDER.map(lane => ({ card: pick(lane, 0), lane }));
+    const p2 = LANE_ORDER.map(lane => ({ card: pick(lane, 1), lane }));
+    const result = resolveRound(p1, p2, state);
+    expect(state.roundResults).toEqual([result]);
+    expect(state.currentRound).toBe(2);
+    for (const item of p1) expect(state.p1UsedCardIds.has(item.card.id)).toBe(true);
+    for (const item of p2) expect(state.p2UsedCardIds.has(item.card.id)).toBe(true);
   });
 });

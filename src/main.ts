@@ -1,7 +1,6 @@
 import Phaser from 'phaser';
 import { MenuScene } from './game/scenes/MenuScene';
 import { HowToPlayScene } from './game/scenes/HowToPlayScene';
-import { DraftScene } from './game/scenes/DraftScene';
 import { GameScene } from './game/scenes/GameScene';
 import { SummaryScene } from './game/scenes/SummaryScene';
 import { LoginScene } from './game/scenes/LoginScene';
@@ -15,8 +14,8 @@ const config: Phaser.Types.Core.GameConfig = {
   width: 1200,
   height: 800,
   parent: 'app',
+  scene: [MenuScene, HowToPlayScene, LoginScene, LobbyScene, GameScene, SummaryScene],
   backgroundColor: '#0a1a2e',
-  scene: [MenuScene, HowToPlayScene, LoginScene, LobbyScene, DraftScene, GameScene, SummaryScene],
   dom: { createContainer: true },
   scale: {
     mode: Phaser.Scale.FIT,

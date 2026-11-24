@@ -1,6 +1,7 @@
 // End-to-end smoke test against `npm run dev:worker` (default http://127.0.0.1:8787).
 // Two scripted WebSocket clients create/join a room and play a full best-of-3.
-// Round 2 deliberately lets one 20s battle turn expire to check the server auto-pick.
+// Every lane, each client is dealt its own two cards and plays one. Round 2 deliberately lets
+// one player's 20s lane clock expire to check the server auto-pick.
 const BASE = process.env.VEIL_SERVER ?? 'http://127.0.0.1:8787';
 const WS_BASE = BASE.replace(/^http/, 'ws');
 const log = (...args) => console.log(new Date().toISOString().slice(11, 19), ...args);
@@ -48,7 +49,7 @@ await a.opened;
 await waitFor(() => a.state, 'alice state');
 if (a.you !== 'P1' || a.state.phase !== 'waiting') fail('first joiner should be P1 waiting');
 const b = connect(created.code, 'Bob');
-await waitFor(() => b.state && a.state.phase === 'draft', 'draft start');
+await waitFor(() => b.state && a.state.phase === 'battle', 'round start');
 if (b.you !== 'P2') fail('second joiner should be P2');
 log('both joined; round-1 first player', a.state.round1FirstPlayer);
 
@@ -67,28 +68,43 @@ function assertNoLeak() {
     const other = clients().find(o => o !== cl);
     const st = cl.state;
     const otherSt = other.state;
-    if (!st || !otherSt || st.phase !== otherSt.phase || st.round !== otherSt.round) continue;
+    if (!st?.battle || !otherSt?.battle || st.phase !== 'battle' || otherSt.phase !== 'battle') continue;
+    if (st.round !== otherSt.round || st.battle.laneIndex !== otherSt.battle.laneIndex) continue;
     const json = JSON.stringify(st);
-    if (st.phase === 'draft' && otherSt.draft) {
-      const mine = new Set([...(Object.values(st.draft.myPicks)), ...(st.draft.candidates ?? [])]);
-      for (const id of Object.values(otherSt.draft.myPicks)) {
-        if (mine.has(id)) continue; // legal mirror, or still in my candidate list
-        if (json.includes(`"${id}"`)) fail(`draft leak ${id}`);
-      }
-      leakChecks++;
+    const allowed = new Set([...st.battle.myOffer, ...Object.values(st.battle.myCards), ...st.usedCardIds]);
+    for (const r of st.battle.revealed) {
+      allowed.add(r.p1Card.id);
+      allowed.add(r.p2Card.id);
+      for (const link of [...r.p1Synergy.links, ...r.p2Synergy.links]) allowed.add(link.card.id);
     }
-    if (st.phase === 'battle' && otherSt.battle) {
-      const opened = new Set(st.battle.revealed.map(r => r.lane));
-      const myIds = new Set(Object.values(st.battle.myCards));
-      for (const [lane, id] of Object.entries(otherSt.battle.myCards)) {
-        if (!opened.has(lane) && !myIds.has(id) && json.includes(`"${id}"`)) fail(`battle leak ${lane} ${id}`);
-      }
-      leakChecks++;
+    for (const id of [...otherSt.battle.myOffer, otherSt.battle.myPick]) {
+      if (!id || allowed.has(id)) continue;
+      if (json.includes(`"${id}"`)) fail(`leak of opponent card ${id} to ${cl.you}`);
     }
+    if ('offers' in st.battle || 'picks' in st.battle) fail('raw server offers sent to client');
+    leakChecks++;
   }
 }
 
 let lastRoundLogged = 0;
+let synergyLinks = 0;
+const checkedLanes = new Set();
+function checkLaneScores(st) {
+  for (const r of st.battle?.revealed ?? []) {
+    const key = `${st.round}:${r.lane}`;
+    if (checkedLanes.has(key)) continue;
+    checkedLanes.add(key);
+    for (const side of ['p1', 'p2']) {
+      const expected = r[`${side}WinRate`] + r.orderBonus + r[`${side}Synergy`].bonus;
+      if (Math.abs(expected - r[`${side}Total`]) > 1e-9) fail(`lane total mismatch ${key} ${side}`);
+      for (const link of r[`${side}Synergy`].links) {
+        if (![0.05, 0.04, 0.03, 0.02, 0.01].some(tier => Math.abs(tier - link.bonus) < 1e-9)) fail(`bad synergy tier ${link.bonus}`);
+        synergyLinks++;
+      }
+    }
+  }
+}
+
 while (true) {
   await sleep(40);
   assertNoLeak();
@@ -96,17 +112,10 @@ while (true) {
   if (!st) continue;
   if (st.phase === 'matchEnd') break;
 
-  if (st.phase === 'draft') {
-    const current = st.draft.currentPlayer;
-    const actor = byPlayer(current);
-    const view = actor.state;
-    if (view?.phase === 'draft' && view.draft.candidates.length && view.draft.currentIndex === st.draft.currentIndex
-        && actor.lastPickIndex !== `${st.round}:${view.draft.currentIndex}`) {
-      actor.lastPickIndex = `${st.round}:${view.draft.currentIndex}`;
-      actor.send({ type: 'pick', cardId: view.draft.candidates[0] });
-    }
-    // Reconnect test: drop Alice mid-draft in round 1 and come back with her session token.
-    if (!reconnected && st.round === 1 && st.draft.currentIndex === 7) {
+  if (st.phase === 'battle') {
+    checkLaneScores(st);
+    // Reconnect test: drop Alice in round 1 at the Mid lane and come back with her session token.
+    if (!reconnected && st.round === 1 && st.battle.laneIndex === 2) {
       reconnected = true;
       const session = a.session;
       a.ws.close();
@@ -115,35 +124,32 @@ while (true) {
       a = connect(created.code, 'Alice', session);
       await waitFor(() => a.state && b.state.players.P1?.connected, 'reconnect');
       if (a.you !== 'P1') fail('reconnect should restore P1 seat');
-      log('Alice reconnected to seat', a.you, 'at pick', a.state.draft?.currentIndex);
-    }
-    continue;
-  }
-
-  if (st.phase === 'battle') {
-    const lead = byPlayer(st.battle.lead);
-    const view = lead.state;
-    if (view?.phase !== 'battle') continue;
-    const now = view.serverNow + (Date.now() - (lead.receivedAt ?? Date.now()));
-    const key = `${view.round}:${view.battle.revealed.length}`;
-    if (lead.lastPlayKey === key) continue;
-    if (view.round === 2 && view.battle.revealed.length === 1 && !timeoutChecked) {
-      // Let this 20s turn expire: the server must open a random lane by itself.
-      timeoutChecked = true;
-      lead.lastPlayKey = key;
-      const t0 = Date.now();
-      log('round 2: lead idles to test the 20s auto-pick…');
-      await waitFor(() => a.state.battle?.revealed.length === 2 || a.state.phase !== 'battle', 'auto pick', 40000);
-      const waited = (Date.now() - t0) / 1000;
-      log(`server auto-opened ${a.state.battle.revealed[1].lane} after ${waited.toFixed(1)}s`);
-      if (waited < 20 || waited > 30) fail(`auto-pick timing off: ${waited}s`);
+      log('Alice reconnected to seat', a.you, 'at lane', a.state.battle?.currentLane);
       continue;
     }
-    if (view.battle.turnStartsAt && Date.now() < view.battle.turnStartsAt - view.serverNow + (lead.stateAt ?? 0)) continue;
-    lead.lastPlayKey = key;
-    await sleep(Math.max(0, (view.battle.turnStartsAt ?? 0) - view.serverNow) + 50);
-    lead.send({ type: 'play', lane: view.battle.opponentHidden[0] });
-    void now;
+    for (const cl of clients()) {
+      const view = cl.state;
+      if (view?.phase !== 'battle' || !view.battle.currentLane || view.battle.myPick) continue;
+      const key = `${view.round}:${view.battle.laneIndex}`;
+      if (cl.lastPickKey === key) continue;
+      if (view.battle.myOffer.length !== 2) fail(`expected 2 offered cards, got ${view.battle.myOffer.length}`);
+      cl.lastPickKey = key;
+      if (view.round === 2 && view.battle.laneIndex === 1 && cl.you === 'P2' && !timeoutChecked) {
+        // Bob idles on this lane: the server must play a random offered card for him after 20s.
+        timeoutChecked = true;
+        const startsIn = Math.max(0, (view.battle.turnStartsAt ?? view.serverNow) - view.serverNow);
+        const t0 = Date.now() + startsIn;
+        log('round 2: Bob idles on Jungle to test the 20s auto-pick…');
+        await waitFor(() => b.state.battle?.revealed.length === 2 || b.state.phase !== 'battle', 'auto pick', 45000);
+        const waited = (Date.now() - t0) / 1000;
+        const autoCard = b.state.battle.revealed[1].p2Card.id;
+        log(`server auto-played ${autoCard} for Bob after ${waited.toFixed(1)}s`);
+        if (!view.battle.myOffer.includes(autoCard)) fail('auto-pick must be one of the offered cards');
+        if (waited < 19 || waited > 30) fail(`auto-pick timing off: ${waited}s`);
+        break;
+      }
+      cl.send({ type: 'pick', cardId: view.battle.myOffer[cl.you === 'P1' ? 1 : 0] });
+    }
     continue;
   }
 
@@ -151,7 +157,8 @@ while (true) {
     if (lastRoundLogged !== st.lastRoundNumber) {
       lastRoundLogged = st.lastRoundNumber;
       const r = st.lastRound;
-      log(`round ${st.lastRoundNumber} done: P1 ${(r.p1WinRate * 100).toFixed(1)}% vs P2 ${(r.p2WinRate * 100).toFixed(1)}% → ${r.roundWinner ?? 'draw'}; order ${r.revealOrder.join(',')}`);
+      log(`round ${st.lastRoundNumber} done: P1 ${(r.p1WinRate * 100).toFixed(1)}% vs P2 ${(r.p2WinRate * 100).toFixed(1)}% → ${r.roundWinner ?? 'draw'}; synergy P1 +${(r.p1SynergyAvg * 100).toFixed(1)} / P2 +${(r.p2SynergyAvg * 100).toFixed(1)} avg`);
+      if (r.revealOrder.join(',') !== 'Top,Jungle,Mid,Bot,Support') fail(`lanes out of order: ${r.revealOrder}`);
       a.send({ type: 'ready' });
       b.send({ type: 'ready' });
     }
@@ -167,9 +174,10 @@ const myUsed = new Set(final.usedCardIds);
 if (myUsed.size !== 15) fail(`Fearless: expected 15 used cards for this player, got ${myUsed.size} (${final.usedCardIds.join(',')})`);
 if (!timeoutChecked) fail('timeout path not exercised');
 if (!reconnected) fail('reconnect path not exercised');
-const unexpected = [...a.errors, ...b.errors].filter(code => !['TOO_EARLY'].includes(code));
+const unexpected = [...a.errors, ...b.errors];
 if (unexpected.length) fail(`server errors: ${unexpected.join(',')}`);
-log(`leak checks passed: ${leakChecks}`);
+log(`leak checks passed: ${leakChecks}; synergy links seen: ${synergyLinks}`);
+if (leakChecks < 20) fail(`too few leak checks: ${leakChecks}`);
 console.log('SMOKE OK');
 a.ws.close(); b.ws.close(); c.ws.close();
 process.exit(0);

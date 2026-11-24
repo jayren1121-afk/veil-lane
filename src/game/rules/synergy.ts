@@ -1,52 +1,93 @@
-import { getLaneWinRate } from '../data/cards';
-import { getSynergy } from '../data/synergies';
-import { SYNERGY_BONUS_MAX, SYNERGY_BONUS_MIN, SYNERGY_MIN_EDGE, SYNERGY_MIN_GAMES, SYNERGY_RAW_CAP } from './constants';
-import { ObviousSynergy, Placement, SynergyEntry, TeamSynergy } from './types';
+import { CARDS, getLaneWinRate } from '../data/cards';
+import { getAllSynergies } from '../data/synergies';
+import { SYNERGY_MIN_EDGE, SYNERGY_MIN_GAMES, SYNERGY_TIER } from './constants';
+import { Card, Lane, LaneSynergy, LaneSynergyLink, Placement, SynergyEntry } from './types';
 
+/** Edge of a pair over its expected win rate; 0 unless it clears the "obvious synergy" thresholds. */
 export function computeSynergyEdge(wins: number, total: number, expectedWinRate: number): number {
   if (total < SYNERGY_MIN_GAMES || total <= 0) return 0;
   const edge = wins / total - expectedWinRate;
   return edge >= SYNERGY_MIN_EDGE ? edge : 0;
 }
 
-export function computeSynergyBonus(raw: number): number {
-  if (raw <= 0) return 0;
-  const bonusPercentage = SYNERGY_BONUS_MIN +
-    (SYNERGY_BONUS_MAX - SYNERGY_BONUS_MIN) * Math.min(raw / SYNERGY_RAW_CAP, 1);
-  return bonusPercentage / 100;
+/** Tier bonus (0-1 scale) for a 1-based synergy rank; 0 beyond the top five. */
+export function synergyTierBonus(rank: number): number {
+  const tier = SYNERGY_TIER[rank - 1];
+  return tier === undefined ? 0 : tier / 100;
 }
 
-export function computeTeamSynergy(
-  placements: Placement[],
-  lookup: (cardA: string, laneA: Placement['lane'], cardB: string, laneB: Placement['lane']) => SynergyEntry | null = getSynergy
-): TeamSynergy {
-  const obviousSynergies: ObviousSynergy[] = [];
+/** One ranked synergy partner of a card in a lane. */
+export interface RankedPartner {
+  cardId: string;
+  lane: Lane;
+  edge: number;
+  rank: number;
+  bonus: number;
+}
 
-  for (let i = 0; i < placements.length; i++) {
-    for (let j = i + 1; j < placements.length; j++) {
-      const first = placements[i];
-      const second = placements[j];
-      const entry = lookup(first.card.id, first.lane, second.card.id, second.lane);
-      if (!entry) continue;
+const CARD_BY_ID = new Map<string, Card>(CARDS.map(card => [card.id, card]));
+let rankingCache: Map<string, RankedPartner[]> | null = null;
 
-      const expectedWinRate = (getLaneWinRate(first.card, first.lane) + getLaneWinRate(second.card, second.lane)) / 2;
-      const edge = computeSynergyEdge(entry.wins, entry.total, expectedWinRate);
-      if (edge === 0) continue;
-
-      obviousSynergies.push({
-        cardA: first.card,
-        laneA: first.lane,
-        cardB: second.card,
-        laneB: second.lane,
-        wins: entry.wins,
-        total: entry.total,
-        expectedWinRate,
-        synergyWinRate: entry.wins / entry.total,
-        edge,
-      });
-    }
+function buildRankings(entries: SynergyEntry[], cardById: (id: string) => Card | undefined): Map<string, RankedPartner[]> {
+  const lists = new Map<string, { cardId: string; lane: Lane; edge: number }[]>();
+  const push = (key: string, item: { cardId: string; lane: Lane; edge: number }) => {
+    const list = lists.get(key);
+    if (list) list.push(item);
+    else lists.set(key, [item]);
+  };
+  for (const entry of entries) {
+    const a = cardById(entry.cardA);
+    const b = cardById(entry.cardB);
+    if (!a || !b || a.id === b.id) continue;
+    const expected = (getLaneWinRate(a, entry.laneA) + getLaneWinRate(b, entry.laneB)) / 2;
+    const edge = computeSynergyEdge(entry.wins, entry.total, expected);
+    if (edge <= 0) continue;
+    push(`${a.id}|${entry.laneA}`, { cardId: b.id, lane: entry.laneB, edge });
+    push(`${b.id}|${entry.laneB}`, { cardId: a.id, lane: entry.laneA, edge });
   }
-
-  const rawValue = obviousSynergies.reduce((total, synergy) => total + synergy.edge, 0);
-  return { obviousSynergies, rawValue, bonus: computeSynergyBonus(rawValue) };
+  const ranked = new Map<string, RankedPartner[]>();
+  for (const [key, list] of lists) {
+    list.sort((x, y) => y.edge - x.edge || x.cardId.localeCompare(y.cardId));
+    ranked.set(key, list.slice(0, SYNERGY_TIER.length).map((item, index) => ({
+      ...item,
+      rank: index + 1,
+      bonus: synergyTierBonus(index + 1),
+    })));
+  }
+  return ranked;
 }
+
+/**
+ * Top obvious synergy partners of `cardId` when it plays `lane`, best first (max five).
+ * Pass `entries` to rank a custom table (tests); otherwise the bundled aggregate is used.
+ */
+export function rankSynergyPartners(
+  cardId: string,
+  lane: Lane,
+  entries?: SynergyEntry[],
+  cardById: (id: string) => Card | undefined = id => CARD_BY_ID.get(id),
+): RankedPartner[] {
+  if (entries) return buildRankings(entries, cardById).get(`${cardId}|${lane}`) ?? [];
+  if (!rankingCache) rankingCache = buildRankings(getAllSynergies(), cardById);
+  return rankingCache.get(`${cardId}|${lane}`) ?? [];
+}
+
+/**
+ * Synergy that `card` played in `lane` gets from the player's already-played cards this round.
+ * Each played card that is one of the card's top-five obvious partners adds its tier bonus.
+ */
+export function computeLaneSynergy(
+  card: Card,
+  lane: Lane,
+  played: Placement[],
+  ranking: RankedPartner[] = rankSynergyPartners(card.id, lane),
+): LaneSynergy {
+  const links: LaneSynergyLink[] = [];
+  for (const partner of ranking) {
+    const placement = played.find(item => item.card.id === partner.cardId && item.lane === partner.lane);
+    if (!placement || placement.card.id === card.id) continue;
+    links.push({ card: placement.card, lane: placement.lane, edge: partner.edge, rank: partner.rank, bonus: partner.bonus });
+  }
+  return { links, bonus: links.reduce((sum, link) => sum + link.bonus, 0) };
+}
+

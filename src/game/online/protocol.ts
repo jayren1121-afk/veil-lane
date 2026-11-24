@@ -1,6 +1,6 @@
 import type { Lane, LaneRevealResult, Player, RoundResult } from '../rules/types';
 
-export type OnlinePhase = 'waiting' | 'draft' | 'battle' | 'summary' | 'matchEnd';
+export type OnlinePhase = 'waiting' | 'battle' | 'summary' | 'matchEnd';
 
 export interface PublicSeat {
   name: string;
@@ -8,34 +8,24 @@ export interface PublicSeat {
   isGuest: boolean;
 }
 
-export interface DraftView {
-  currentIndex: number;
-  totalSlots: number;
-  currentPlayer: Player | null;
-  currentLane: Lane | null;
-  /** When the current player's chess clock hits zero (ms epoch). */
-  deadline: number;
-  /** Both banks in milliseconds, already adjusted for elapsed time at serverNow. */
-  timeRemainingMs: Record<Player, number>;
-  /** Only this player's own picks (lane -> card id). */
-  myPicks: Partial<Record<Lane, string>>;
-  /** Lanes where the opponent has already locked a card (contents hidden). */
-  opponentLocked: Lane[];
-  /** Valid card ids for the current slot; only sent to the player whose turn it is. */
-  candidates: string[];
-}
-
 export interface BattleView {
   lead: Player;
-  /** This player's own cards (lane -> card id). */
+  /** Index into LANE_ORDER of the lane being picked; 5 once the round is over. */
+  laneIndex: number;
+  currentLane: Lane | null;
+  /** This player's own two offered card ids for the current lane (never the opponent's). */
+  myOffer: string[];
+  /** This player's locked pick for the current lane, if any. */
+  myPick: string | null;
+  /** Whether the opponent has locked a pick for the current lane (the card itself stays hidden). */
+  opponentPicked: boolean;
+  /** This player's own played cards this round (lane -> card id). */
   myCards: Partial<Record<Lane, string>>;
-  /** Lanes where the opponent's card is still face-down. */
-  opponentHidden: Lane[];
-  /** Lanes already opened, with both cards and the duel result. */
+  /** Lanes already resolved, with both cards, synergy links and the duel result. */
   revealed: LaneRevealResult[];
-  /** The current decision cannot be made before this time (reveal animation pause). */
+  /** Picks for the current lane open at this time (after the reveal animation pause). */
   turnStartsAt: number | null;
-  /** Server-enforced deadline; a random lane is opened when it passes. */
+  /** Server-enforced deadline; anyone who has not picked gets a random offered card. */
   turnDeadline: number | null;
 }
 
@@ -51,7 +41,6 @@ export interface MatchView {
   score: Record<Player, number>;
   /** This player's Fearless list only (the opponent's used cards are not sent). */
   usedCardIds: string[];
-  draft: DraftView | null;
   battle: BattleView | null;
   lastRound: RoundResult | null;
   lastRoundNumber: number;
@@ -62,7 +51,6 @@ export interface MatchView {
 
 export type ClientMessage =
   | { type: 'pick'; cardId: string }
-  | { type: 'play'; lane: Lane }
   | { type: 'ready' }
   | { type: 'ping' };
 

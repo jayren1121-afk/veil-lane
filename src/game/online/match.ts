@@ -3,44 +3,34 @@
  * so the Durable Object and unit tests share the exact same rules engine.
  */
 import {
-  applyDraftFearless,
-  autoPickRemaining,
+  autoLanePick,
   BATTLE_TURN_SECONDS,
-  createDraftState,
-  createRevealState,
+  bothPicked,
+  createRoundPlay,
   createTurnDeadline,
-  DraftState,
+  currentPlayLane,
   GamePhase,
-  getCurrentDraftLane,
-  getCurrentDraftPlayer,
-  getDraftCandidates,
   getFirstPlayerForRound,
-  isDraftComplete,
-  isRevealComplete,
+  isRoundPlayComplete,
   isTurnExpired,
   Lane,
   LANE_ORDER,
   LANE_REVEAL_PAUSE_MS,
-  LaneRevealResult,
   MatchState,
-  pickCard,
-  pickRandomLane,
-  Placement,
   Player,
-  resolveLaneDuel,
-  resolveRound,
-  revealLane,
-  RevealState,
+  recordRoundResult,
+  resolveCurrentLane,
+  RoundPlay,
   RoundResult,
+  submitLanePick,
+  summarizeRound,
   TOTAL_ROUNDS,
 } from '../rules';
-import { CARDS } from '../data/cards';
 import type { MatchView, OnlinePhase } from './protocol';
 
-/** Time for the coin-flip animation before the first draft clock starts. */
-export const FIRST_DRAFT_INTRO_MS = 4500;
-export const DRAFT_INTRO_MS = 1500;
-export const BATTLE_INTRO_MS = 2500;
+/** Time for the coin-flip animation before the first lane's clock starts. */
+export const FIRST_ROUND_INTRO_MS = 4500;
+export const ROUND_INTRO_MS = 2500;
 export const SUMMARY_SECONDS = 60;
 
 export interface Seat {
@@ -59,12 +49,8 @@ export interface OnlineMatchData {
   p2RoundWins: number;
   p1UsedCardIds: string[];
   p2UsedCardIds: string[];
-  draft: DraftState | null;
-  /** When the current player's draft clock started (after the intro). */
-  draftClockStartedAt: number | null;
-  draftDeadline: number | null;
-  reveal: RevealState | null;
-  laneResults: LaneRevealResult[];
+  /** The round being played lane by lane (kept through summary so results stay visible). */
+  play: RoundPlay | null;
   turnStartsAt: number | null;
   turnDeadline: number | null;
   roundResults: RoundResult[];
@@ -76,8 +62,6 @@ export interface OnlineMatchData {
 }
 
 export type JoinResult = { ok: true; player: Player; sessionToken: string; rejoined: boolean } | { ok: false; code: 'ROOM_FULL' };
-
-const CARD_BY_ID = new Map(CARDS.map(card => [card.id, card]));
 
 export class OnlineMatch {
   constructor(public data: OnlineMatchData, private readonly random: () => number = Math.random) {}
@@ -92,11 +76,7 @@ export class OnlineMatch {
       p2RoundWins: 0,
       p1UsedCardIds: [],
       p2UsedCardIds: [],
-      draft: null,
-      draftClockStartedAt: null,
-      draftDeadline: null,
-      reveal: null,
-      laneResults: [],
+      play: null,
       turnStartsAt: null,
       turnDeadline: null,
       roundResults: [],
@@ -140,7 +120,7 @@ export class OnlineMatch {
   /** Starts round 1 once both seats are filled. Returns true if the match started. */
   startIfReady(now: number): boolean {
     if (this.data.phase !== 'waiting' || !this.isFull()) return false;
-    this.startDraft(now, FIRST_DRAFT_INTRO_MS);
+    this.startRound(now, FIRST_ROUND_INTRO_MS);
     return true;
   }
 
@@ -148,8 +128,6 @@ export class OnlineMatch {
 
   private matchStateMirror(): MatchState {
     return {
-      p1Hand: [],
-      p2Hand: [],
       p1UsedCardIds: new Set(this.data.p1UsedCardIds),
       p2UsedCardIds: new Set(this.data.p2UsedCardIds),
       currentRound: this.data.round,
@@ -158,57 +136,45 @@ export class OnlineMatch {
       p2RoundWins: this.data.p2RoundWins,
       roundResults: [...this.data.roundResults],
       matchWinner: this.data.matchWinner,
-      phase: GamePhase.Draft,
+      phase: GamePhase.Place,
     };
   }
 
-  private startDraft(now: number, introMs: number): void {
-    this.data.phase = 'draft';
-    this.data.draft = createDraftState(this.data.round);
-    this.data.draftClockStartedAt = now + introMs;
-    this.refreshDraftDeadline();
-    this.data.reveal = null;
-    this.data.laneResults = [];
-    this.data.turnStartsAt = null;
-    this.data.turnDeadline = null;
+  /** Deal the first lane of a new round; picks open after the intro. */
+  private startRound(now: number, introMs: number): void {
+    this.data.phase = 'battle';
+    this.data.play = createRoundPlay(this.data.round, {
+      [Player.P1]: this.data.p1UsedCardIds,
+      [Player.P2]: this.data.p2UsedCardIds,
+    } as Record<Player, string[]>, this.random);
+    this.data.turnStartsAt = now + introMs;
+    this.data.turnDeadline = createTurnDeadline(now, introMs, BATTLE_TURN_SECONDS);
     this.data.ready = [];
     this.data.summaryDeadline = null;
-  }
-
-  private startBattle(now: number): void {
-    const draft = this.data.draft!;
-    const mirror = this.matchStateMirror();
-    applyDraftFearless(draft, mirror);
-    this.data.p1UsedCardIds = [...mirror.p1UsedCardIds];
-    this.data.p2UsedCardIds = [...mirror.p2UsedCardIds];
-    this.data.phase = 'battle';
-    this.data.draftClockStartedAt = null;
-    this.data.draftDeadline = null;
-    this.data.reveal = createRevealState(this.firstPlayer());
-    this.data.laneResults = [];
-    this.data.turnStartsAt = now + BATTLE_INTRO_MS;
-    this.data.turnDeadline = createTurnDeadline(now, BATTLE_INTRO_MS, BATTLE_TURN_SECONDS);
   }
 
   firstPlayer(round = this.data.round): Player {
     return getFirstPlayerForRound(this.data.round1FirstPlayer, round);
   }
 
-  placements(player: Player): Placement[] {
-    const draft = this.data.draft;
-    if (!draft) return [];
-    const result: Placement[] = [];
-    for (const lane of LANE_ORDER) {
-      const slot = draft.slots.find(item => item.lane === lane && item.player === player);
-      const card = slot?.cardId ? CARD_BY_ID.get(slot.cardId) : undefined;
-      if (card) result.push({ card, lane });
+  /** Resolve the current lane, then either open the next lane after the pause or end the round. */
+  private resolveLane(now: number): void {
+    const play = this.data.play!;
+    if (!resolveCurrentLane(play, this.random)) return;
+    if (isRoundPlayComplete(play)) {
+      this.finishRound(now);
+    } else {
+      this.data.turnStartsAt = now + LANE_REVEAL_PAUSE_MS;
+      this.data.turnDeadline = createTurnDeadline(now, LANE_REVEAL_PAUSE_MS, BATTLE_TURN_SECONDS);
     }
-    return result;
   }
 
   private finishRound(now: number): void {
+    const play = this.data.play!;
     const mirror = this.matchStateMirror();
-    resolveRound(this.placements(Player.P1), this.placements(Player.P2), mirror, this.data.reveal!.revealOrder);
+    recordRoundResult(mirror, summarizeRound(play.results, this.firstPlayer()));
+    this.data.p1UsedCardIds = [...mirror.p1UsedCardIds];
+    this.data.p2UsedCardIds = [...mirror.p2UsedCardIds];
     this.data.p1RoundWins = mirror.p1RoundWins;
     this.data.p2RoundWins = mirror.p2RoundWins;
     this.data.roundResults = mirror.roundResults;
@@ -227,45 +193,15 @@ export class OnlineMatch {
 
   // ---------- actions ----------
 
+  /** Lock one of `player`'s two offered cards for the current lane. */
   pick(player: Player, cardId: string, now: number): string | null {
     this.tick(now);
-    const draft = this.data.draft;
-    if (this.data.phase !== 'draft' || !draft) return 'NOT_DRAFT_PHASE';
-    if (getCurrentDraftPlayer(draft) !== player) return 'NOT_YOUR_TURN';
-    this.spendDraftClock(now);
-    const error = pickCard(draft, this.matchStateMirror(), cardId);
-    if (error) return 'INVALID_PICK';
-    this.data.draftClockStartedAt = now;
-    this.refreshDraftDeadline();
-    if (isDraftComplete(draft)) this.startBattle(now);
+    const play = this.data.play;
+    if (this.data.phase !== 'battle' || !play || isRoundPlayComplete(play)) return 'NOT_BATTLE_PHASE';
+    const error = submitLanePick(play, player, cardId);
+    if (error) return error;
+    if (bothPicked(play)) this.resolveLane(now);
     return null;
-  }
-
-  play(player: Player, lane: Lane, now: number): string | null {
-    this.tick(now);
-    if (this.data.phase !== 'battle' || !this.data.reveal) return 'NOT_BATTLE_PHASE';
-    if (this.data.reveal.firstPlayer !== player) return 'NOT_YOUR_TURN';
-    if (this.data.turnStartsAt !== null && now < this.data.turnStartsAt - 250) return 'TOO_EARLY';
-    return this.openLane(lane, now) ? null : 'INVALID_LANE';
-  }
-
-  private openLane(lane: Lane, now: number): boolean {
-    const reveal = this.data.reveal!;
-    const next = revealLane(reveal, lane);
-    if (!next) return false;
-    const p1 = this.placements(Player.P1).find(item => item.lane === lane);
-    const p2 = this.placements(Player.P2).find(item => item.lane === lane);
-    if (!p1 || !p2) return false;
-    const orderIndex = reveal.revealOrder.length;
-    this.data.reveal = next;
-    this.data.laneResults.push(resolveLaneDuel(p1.card, p2.card, lane, orderIndex));
-    if (isRevealComplete(next)) {
-      this.finishRound(now);
-    } else {
-      this.data.turnStartsAt = now + LANE_REVEAL_PAUSE_MS;
-      this.data.turnDeadline = createTurnDeadline(now, LANE_REVEAL_PAUSE_MS, BATTLE_TURN_SECONDS);
-    }
-    return true;
   }
 
   ready(player: Player, now: number): string | null {
@@ -279,69 +215,21 @@ export class OnlineMatch {
   private nextRound(now: number): void {
     if (this.data.round >= TOTAL_ROUNDS) return;
     this.data.round += 1;
-    this.startDraft(now, DRAFT_INTRO_MS);
-  }
-
-  /** Deduct elapsed time from the current player's bank and move the clock start to `now`. */
-  private spendDraftClock(now: number): void {
-    const draft = this.data.draft;
-    const player = draft ? getCurrentDraftPlayer(draft) : null;
-    const started = this.data.draftClockStartedAt;
-    if (!draft || !player || started === null || now <= started) return;
-    draft.timeRemainingMs[player] = Math.max(0, draft.timeRemainingMs[player] - (now - started));
-    this.data.draftClockStartedAt = now;
-    this.refreshDraftDeadline();
-  }
-
-  private refreshDraftDeadline(): void {
-    const draft = this.data.draft;
-    const player = draft ? getCurrentDraftPlayer(draft) : null;
-    if (!draft || !player || this.data.draftClockStartedAt === null) {
-      this.data.draftDeadline = null;
-      return;
-    }
-    this.data.draftDeadline = this.data.draftClockStartedAt + draft.timeRemainingMs[player];
-  }
-
-  /** Snapshot of both banks at `now`, with the current player's elapsed time already subtracted. */
-  private draftBanksAt(now: number): Record<Player, number> {
-    const draft = this.data.draft!;
-    const remaining: Record<Player, number> = {
-      [Player.P1]: draft.timeRemainingMs[Player.P1],
-      [Player.P2]: draft.timeRemainingMs[Player.P2],
-    };
-    const player = getCurrentDraftPlayer(draft);
-    const started = this.data.draftClockStartedAt;
-    if (player && started !== null && now > started) {
-      remaining[player] = Math.max(0, remaining[player] - (now - started));
-    }
-    return remaining;
+    this.startRound(now, ROUND_INTRO_MS);
   }
 
   /** Applies every expired deadline. Returns true if anything changed. */
   tick(now: number): boolean {
     let changed = false;
     for (let guard = 0; guard < 20; guard++) {
-      if (this.data.phase === 'draft' && this.data.draft && this.data.draftDeadline !== null
-        && isTurnExpired(this.data.draftDeadline, now)) {
-        const timedOut = getCurrentDraftPlayer(this.data.draft);
-        if (timedOut) {
-          this.data.draft.timeRemainingMs[timedOut] = 0;
-          autoPickRemaining(this.data.draft, this.matchStateMirror(), timedOut);
-        }
-        this.data.draftClockStartedAt = now;
-        this.refreshDraftDeadline();
-        if (isDraftComplete(this.data.draft)) this.startBattle(now);
+      const play = this.data.play;
+      if (this.data.phase === 'battle' && play && !isRoundPlayComplete(play) && this.data.turnDeadline !== null
+        && isTurnExpired(this.data.turnDeadline, now)) {
+        autoLanePick(play, Player.P1, this.random);
+        autoLanePick(play, Player.P2, this.random);
+        this.resolveLane(now);
         changed = true;
         continue;
-      }
-      if (this.data.phase === 'battle' && this.data.reveal && this.data.turnDeadline !== null
-        && isTurnExpired(this.data.turnDeadline, now)) {
-        const lane = pickRandomLane(this.data.reveal, this.random);
-        if (lane && this.openLane(lane, now)) {
-          changed = true;
-          continue;
-        }
       }
       if (this.data.phase === 'summary' && this.data.summaryDeadline !== null
         && isTurnExpired(this.data.summaryDeadline, now)) {
@@ -357,7 +245,6 @@ export class OnlineMatch {
   /** Next time the server must wake up to enforce a deadline. */
   nextDeadline(): number | null {
     switch (this.data.phase) {
-      case 'draft': return this.data.draftDeadline;
       case 'battle': return this.data.turnDeadline;
       case 'summary': return this.data.summaryDeadline;
       default: return null;
@@ -366,7 +253,10 @@ export class OnlineMatch {
 
   // ---------- views ----------
 
-  /** Everything `player` is allowed to see. Opponent picks stay hidden until their lane is opened. */
+  /**
+   * Everything `player` is allowed to see. The opponent's offered cards and current pick are
+   * never included; their played cards only appear inside resolved lane results.
+   */
   viewFor(player: Player, now: number): MatchView {
     const data = this.data;
     const seats: MatchView['players'] = {};
@@ -375,47 +265,24 @@ export class OnlineMatch {
       if (seat) seats[p] = { name: seat.name, connected: seat.connected, isGuest: !seat.accountId };
     }
 
-    let draftView: MatchView['draft'] = null;
-    if (data.phase === 'draft' && data.draft) {
-      const draft = data.draft;
-      const myPicks: Partial<Record<Lane, string>> = {};
-      const opponentLocked: Lane[] = [];
-      for (const slot of draft.slots) {
-        if (!slot.cardId) continue;
-        if (slot.player === player) myPicks[slot.lane] = slot.cardId;
-        else opponentLocked.push(slot.lane);
-      }
-      const currentPlayer = getCurrentDraftPlayer(draft);
-      const currentLane = getCurrentDraftLane(draft);
-      const candidates = currentPlayer === player && currentLane
-        ? getDraftCandidates(player, currentLane, draft, this.matchStateMirror()).map(card => card.id)
-        : [];
-      const timeRemainingMs = this.draftBanksAt(now);
-      draftView = {
-        currentIndex: draft.currentIndex,
-        totalSlots: draft.slots.length,
-        currentPlayer,
-        currentLane,
-        deadline: data.draftDeadline ?? now,
-        timeRemainingMs,
-        myPicks,
-        opponentLocked,
-        candidates,
-      };
-    }
-
     let battleView: MatchView['battle'] = null;
-    if ((data.phase === 'battle' || data.phase === 'summary' || data.phase === 'matchEnd') && data.reveal && data.draft) {
+    const play = data.play;
+    if ((data.phase === 'battle' || data.phase === 'summary' || data.phase === 'matchEnd') && play) {
+      const opponent = player === Player.P1 ? Player.P2 : Player.P1;
       const myCards: Partial<Record<Lane, string>> = {};
-      for (const item of this.placements(player)) myCards[item.lane] = item.card.id;
-      const opened = new Set(data.reveal.revealOrder);
+      play.played[player].forEach((id, index) => { myCards[LANE_ORDER[index]] = id; });
+      const live = data.phase === 'battle' && !isRoundPlayComplete(play);
       battleView = {
-        lead: data.reveal.firstPlayer,
+        lead: this.firstPlayer(),
+        laneIndex: play.laneIndex,
+        currentLane: live ? currentPlayLane(play) : null,
+        myOffer: live ? [...play.offers[player]] : [],
+        myPick: live ? play.picks[player] : null,
+        opponentPicked: live ? play.picks[opponent] !== null : false,
         myCards,
-        opponentHidden: LANE_ORDER.filter(lane => !opened.has(lane)),
-        revealed: data.laneResults,
-        turnStartsAt: data.phase === 'battle' ? data.turnStartsAt : null,
-        turnDeadline: data.phase === 'battle' ? data.turnDeadline : null,
+        revealed: play.results,
+        turnStartsAt: live ? data.turnStartsAt : null,
+        turnDeadline: live ? data.turnDeadline : null,
       };
     }
 
@@ -431,7 +298,6 @@ export class OnlineMatch {
       players: seats,
       score: { [Player.P1]: data.p1RoundWins, [Player.P2]: data.p2RoundWins } as Record<Player, number>,
       usedCardIds: player === Player.P1 ? [...data.p1UsedCardIds] : [...data.p2UsedCardIds],
-      draft: draftView,
       battle: battleView,
       lastRound: showLastRound ? data.roundResults[data.roundResults.length - 1] ?? null : null,
       lastRoundNumber: data.roundResults.length,

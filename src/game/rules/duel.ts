@@ -3,7 +3,7 @@ import { getMatchup } from '../data/matchups';
 import { getSynergy } from '../data/synergies';
 import { getLaneWinRate } from '../data/cards';
 import { ALPHA, BETA, K, ORDER_BONUS, WIN_RATE_TIE_EPSILON } from './constants';
-import { computeTeamSynergy } from './synergy';
+import { computeLaneSynergy } from './synergy';
 
 /**
  * Logit function: ln(p / (1 - p))
@@ -206,14 +206,16 @@ export function computeTeamScore(
 }
 
 /**
- * Resolve a single lane duel: compute matchup win rate for one lane.
- * Returns the lane winner based on matchup-only win rate (no synergy).
+ * Resolve a single lane duel. Each side's lane total is its matchup win rate, plus the
+ * common order bonus, plus the synergy its card gets from that side's earlier-played cards.
  */
 export function resolveLaneDuel(
   p1Card: Card,
   p2Card: Card,
   lane: Lane,
-  orderIndex = 0
+  orderIndex = 0,
+  p1Played: Placement[] = [],
+  p2Played: Placement[] = [],
 ): LaneRevealResult {
   const p1Shrinkage = computeShrinkageWinRate(p1Card, p2Card, lane);
   const p2Shrinkage = computeShrinkageWinRate(p2Card, p1Card, lane);
@@ -226,13 +228,15 @@ export function resolveLaneDuel(
   const matchupDelta = p1MuLogit - p1BaseLogit;
 
   const orderBonus = (ORDER_BONUS[orderIndex] ?? 0) / 100;
-  const p1Total = p1WinRate + orderBonus;
-  const p2Total = p2WinRate + orderBonus;
+  const p1Synergy = computeLaneSynergy(p1Card, lane, p1Played);
+  const p2Synergy = computeLaneSynergy(p2Card, lane, p2Played);
+  const p1Total = p1WinRate + orderBonus + p1Synergy.bonus;
+  const p2Total = p2WinRate + orderBonus + p2Synergy.bonus;
 
   let laneWinner: Player | null = null;
-  if (p1Total > p2Total) {
+  if (p1Total - p2Total > WIN_RATE_TIE_EPSILON) {
     laneWinner = Player.P1;
-  } else if (p2Total > p1Total) {
+  } else if (p2Total - p1Total > WIN_RATE_TIE_EPSILON) {
     laneWinner = Player.P2;
   }
 
@@ -245,45 +249,21 @@ export function resolveLaneDuel(
     matchupDelta,
     orderIndex,
     orderBonus,
+    p1Synergy,
+    p2Synergy,
     p1Total,
     p2Total,
     laneWinner,
   };
 }
 
-/**
- * Resolve a full round: compute both team scores and determine winner.
- *
- * Round winner is determined by majority lane wins (5 lanes, need 3 to win).
- * Synergies are computed after all lanes are revealed for display purposes.
- */
-export function resolveRoundScores(
-  p1Placements: Placement[],
-  p2Placements: Placement[],
-  revealOrder: Lane[] = LANE_ORDER,
-  firstPlayer: Player = Player.P1
-): RoundResult {
-  // Compute per-lane duel results in the order selected by the first player.
-  const laneResults: LaneRevealResult[] = [];
-
-  for (let orderIndex = 0; orderIndex < revealOrder.length; orderIndex++) {
-    const lane = revealOrder[orderIndex];
-    const p1Place = p1Placements.find(p => p.lane === lane);
-    const p2Place = p2Placements.find(p => p.lane === lane);
-    if (!p1Place || !p2Place) continue;
-
-    const laneResult = resolveLaneDuel(p1Place.card, p2Place.card, lane, orderIndex);
-    laneResults.push(laneResult);
-  }
-
+/** Summarise five resolved lanes into a round result (round total = mean of lane totals). */
+export function summarizeRound(laneResults: LaneRevealResult[], firstPlayer: Player = Player.P1): RoundResult {
   const laneCount = laneResults.length || 1;
-  const p1MatchupAvg = laneResults.reduce((sum, result) => sum + result.p1WinRate, 0) / laneCount;
-  const p2MatchupAvg = laneResults.reduce((sum, result) => sum + result.p2WinRate, 0) / laneCount;
-  const orderBonusAvg = laneResults.reduce((sum, result) => sum + result.orderBonus, 0) / laneCount;
-  const p1Synergy = computeTeamSynergy(p1Placements);
-  const p2Synergy = computeTeamSynergy(p2Placements);
-  const p1WinRate = p1MatchupAvg + orderBonusAvg + p1Synergy.bonus;
-  const p2WinRate = p2MatchupAvg + orderBonusAvg + p2Synergy.bonus;
+  const mean = (pick: (result: LaneRevealResult) => number) =>
+    laneResults.reduce((sum, result) => sum + pick(result), 0) / laneCount;
+  const p1WinRate = mean(result => result.p1Total);
+  const p2WinRate = mean(result => result.p2Total);
 
   let roundWinner: Player | null = null;
   if (p1WinRate - p2WinRate > WIN_RATE_TIE_EPSILON) roundWinner = Player.P1;
@@ -293,13 +273,41 @@ export function resolveRoundScores(
     firstPlayer,
     revealOrder: laneResults.map(result => result.lane),
     laneResults,
-    p1MatchupAvg,
-    p2MatchupAvg,
-    orderBonusAvg,
-    p1Synergy,
-    p2Synergy,
+    p1MatchupAvg: mean(result => result.p1WinRate),
+    p2MatchupAvg: mean(result => result.p2WinRate),
+    orderBonusAvg: mean(result => result.orderBonus),
+    p1SynergyAvg: mean(result => result.p1Synergy.bonus),
+    p2SynergyAvg: mean(result => result.p2Synergy.bonus),
     p1WinRate,
     p2WinRate,
     roundWinner,
   };
+}
+
+/**
+ * Resolve a full round from both line-ups, playing lanes in `revealOrder`. Each lane's synergy
+ * only counts cards that side played in earlier lanes, exactly as in live play.
+ */
+export function resolveRoundScores(
+  p1Placements: Placement[],
+  p2Placements: Placement[],
+  revealOrder: Lane[] = LANE_ORDER,
+  firstPlayer: Player = Player.P1
+): RoundResult {
+  const laneResults: LaneRevealResult[] = [];
+  const p1Played: Placement[] = [];
+  const p2Played: Placement[] = [];
+
+  for (let orderIndex = 0; orderIndex < revealOrder.length; orderIndex++) {
+    const lane = revealOrder[orderIndex];
+    const p1Place = p1Placements.find(p => p.lane === lane);
+    const p2Place = p2Placements.find(p => p.lane === lane);
+    if (!p1Place || !p2Place) continue;
+
+    laneResults.push(resolveLaneDuel(p1Place.card, p2Place.card, lane, laneResults.length, p1Played, p2Played));
+    p1Played.push(p1Place);
+    p2Played.push(p2Place);
+  }
+
+  return summarizeRound(laneResults, firstPlayer);
 }

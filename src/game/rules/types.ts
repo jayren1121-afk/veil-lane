@@ -95,22 +95,19 @@ export interface SynergyDetail {
   rawTotal: number;
 }
 
-export interface ObviousSynergy {
-  cardA: Card;
-  laneA: Lane;
-  cardB: Card;
-  laneB: Lane;
-  wins: number;
-  total: number;
-  expectedWinRate: number;
-  synergyWinRate: number;
-  edge: number;
+/** A played teammate that boosts the card being played in a lane. */
+export interface LaneSynergyLink {
+  card: Card;      // the already-played partner card
+  lane: Lane;      // the lane that partner was played in
+  edge: number;    // synergy edge from the aggregated pair table
+  rank: number;    // 1-based rank among the played card's obvious partners
+  bonus: number;   // tier bonus on a 0-1 scale (0.05 = +5%)
 }
 
-export interface TeamSynergy {
-  obviousSynergies: ObviousSynergy[];
-  rawValue: number;
-  bonus: number;
+/** Synergy bonus a single lane's card receives from earlier-played teammates. */
+export interface LaneSynergy {
+  links: LaneSynergyLink[];
+  bonus: number;   // sum of link bonuses (0-1 scale)
 }
 
 export interface RevealState {
@@ -126,7 +123,7 @@ export interface TeamScore {
   totalLogit: number;        // base + alpha*matchup + beta*synergy
 }
 
-// Result of a single lane reveal (matchup only, no synergy)
+// Result of a single lane duel (matchup + order bonus + per-lane synergy)
 export interface LaneRevealResult {
   lane: Lane;
   p1Card: Card;
@@ -135,9 +132,11 @@ export interface LaneRevealResult {
   p2WinRate: number;         // P2 card win rate in this lane (matchup only)
   matchupDelta: number;      // logit delta for P1
   orderIndex: number;
-  orderBonus: number;        // common percentage-point bonus, e.g. 5 means +5%
-  p1Total: number;            // matchup win rate + order bonus
-  p2Total: number;            // matchup win rate + order bonus
+  orderBonus: number;        // common bonus on a 0-1 scale, e.g. 0.05 means +5%
+  p1Synergy: LaneSynergy;    // P1 synergy from P1's earlier-played cards this round
+  p2Synergy: LaneSynergy;    // P2 synergy from P2's earlier-played cards this round
+  p1Total: number;           // matchup win rate + order bonus + synergy
+  p2Total: number;           // matchup win rate + order bonus + synergy
   laneWinner: Player | null; // null = tie
 }
 
@@ -149,17 +148,15 @@ export interface RoundResult {
   p1MatchupAvg: number;
   p2MatchupAvg: number;
   orderBonusAvg: number;
-  p1Synergy: TeamSynergy;
-  p2Synergy: TeamSynergy;
-  p1WinRate: number;
+  p1SynergyAvg: number;      // mean per-lane synergy bonus
+  p2SynergyAvg: number;
+  p1WinRate: number;         // mean of P1 lane totals
   p2WinRate: number;
   roundWinner: Player | null;
 }
 
 // Full match state (best of 3)
 export interface MatchState {
-  p1Hand: Card[];           // P1's drafted hand
-  p2Hand: Card[];           // P2's drafted hand
   p1UsedCardIds: Set<string>; // Fearless — cards P1 already played this match
   p2UsedCardIds: Set<string>; // Fearless — cards P2 already played this match
   currentRound: number;     // 1-based
@@ -172,7 +169,6 @@ export interface MatchState {
 }
 
 export enum GamePhase {
-  Draft = 'Draft',
   Place = 'Place',
   Reveal = 'Reveal',
   Resolve = 'Resolve',
@@ -180,21 +176,25 @@ export enum GamePhase {
   MatchEnd = 'MatchEnd',
 }
 
-// --- Draft (pick) types ---
+// --- Lane-by-lane play ---
 
-/** One slot in the draft: which lane, which player, which card (if picked). */
-export interface DraftSlot {
-  lane: Lane;
-  player: Player;
-  cardId: string | null;  // null = not yet picked
-}
-
-/** Draft state — tracks per-lane picks for the current round. */
-export interface DraftState {
-  slots: DraftSlot[];           // ordered pick slots
-  currentIndex: number;         // next slot to pick
-  /** Chess-clock banks in milliseconds; only the current player's bank ticks down. */
-  timeRemainingMs: Record<Player, number>;
+/**
+ * One round played lane by lane. Each lane, both players are dealt their own two random
+ * cards and secretly play one. Plain JSON so the online server can persist it.
+ */
+export interface RoundPlay {
+  round: number;
+  /** Index into LANE_ORDER of the lane being played; 5 when the round is complete. */
+  laneIndex: number;
+  /** Cards each player may not be dealt this round (Fearless from earlier rounds). */
+  excluded: Record<Player, string[]>;
+  /** The current lane's offered card ids, per player. Never send the opponent's to a client. */
+  offers: Record<Player, string[]>;
+  /** The current lane's locked picks (null = still choosing). */
+  picks: Record<Player, string | null>;
+  /** Cards played so far this round, in lane order. */
+  played: Record<Player, string[]>;
+  results: LaneRevealResult[];
 }
 
 /** The Fearless set that belongs to `player`. */

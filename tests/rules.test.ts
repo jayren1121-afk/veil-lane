@@ -151,7 +151,7 @@ describe('computeTeamScore', () => {
 });
 
 describe('resolveRoundScores', () => {
-  it('returns team totals from matchup average, reveal-order bonus, and synergy bonus', () => {
+  it('returns round totals as the mean of lane totals (matchup + order + per-lane synergy)', () => {
     const p1: Placement[] = [
       { card: cardA, lane: Lane.Top },
       { card: { id: 'nightstalker', name: 'Nightstalker', role: CardRole.Assassin, lanes: [Lane.Jungle], laneWinRate: 0.53, laneGames: 130, color: '#2F4F4F' }, lane: Lane.Jungle },
@@ -170,8 +170,11 @@ describe('resolveRoundScores', () => {
     const result = resolveRoundScores(p1, p2);
 
     expect(result.p1MatchupAvg + result.p2MatchupAvg).toBeCloseTo(1, 5);
-    expect(result.p1WinRate).toBeCloseTo(result.p1MatchupAvg + result.orderBonusAvg + result.p1Synergy.bonus, 10);
-    expect(result.p2WinRate).toBeCloseTo(result.p2MatchupAvg + result.orderBonusAvg + result.p2Synergy.bonus, 10);
+    expect(result.p1WinRate).toBeCloseTo(result.p1MatchupAvg + result.orderBonusAvg + result.p1SynergyAvg, 10);
+    expect(result.p2WinRate).toBeCloseTo(result.p2MatchupAvg + result.orderBonusAvg + result.p2SynergyAvg, 10);
+    for (const lane of result.laneResults) {
+      expect(lane.p1Total).toBeCloseTo(lane.p1WinRate + lane.orderBonus + lane.p1Synergy.bonus, 10);
+    }
     expect(result.p1WinRate).toBeGreaterThan(0);
     expect(result.p2WinRate).toBeGreaterThan(0);
     expect(result.roundWinner).toBe(Player.P1); // P1 has slightly better cards

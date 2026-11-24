@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeShrinkageWinRate,
-  computeTeamSynergy,
+  computeLaneSynergy,
   Lane,
   Player,
   resolveLaneDuel,
@@ -49,9 +49,11 @@ describe('same-card mirror matchups', () => {
     expect(result.laneResults[0].p2WinRate).toBe(0.5);
     expect(result.p1WinRate).toBeGreaterThan(0);
     expect(result.p2WinRate).toBeGreaterThan(0);
-    expect(Number.isFinite(result.p1Synergy.bonus)).toBe(true);
-    expect(Number.isFinite(result.p2Synergy.bonus)).toBe(true);
+    expect(Number.isFinite(result.p1SynergyAvg)).toBe(true);
+    expect(Number.isFinite(result.p2SynergyAvg)).toBe(true);
     // Synergy is a same-team calculation and is unaffected by the mirrored Top lane.
-    expect(computeTeamSynergy(p1).bonus).toBe(result.p1Synergy.bonus);
+    result.laneResults.forEach((lane, index) => {
+      expect(computeLaneSynergy(p1[index].card, p1[index].lane, p1.slice(0, index)).bonus).toBe(lane.p1Synergy.bonus);
+    });
   });
 });

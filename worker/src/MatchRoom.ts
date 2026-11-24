@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { OnlineMatch, OnlineMatchData } from '../../src/game/online/match';
 import type { ClientMessage, ServerMessage } from '../../src/game/online/protocol';
 import { sanitizeNickname } from '../../src/game/online/roomCode';
-import { LANE_ORDER, Player } from '../../src/game/rules/types';
+import { Player } from '../../src/game/rules/types';
 import type { Env } from './env';
 import { randomToken } from './session';
 
@@ -25,7 +25,8 @@ export class MatchRoom extends DurableObject<Env> {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       const data = await ctx.storage.get<OnlineMatchData>('match');
-      this.match = data ? new OnlineMatch(data) : null;
+      // Rooms saved by an older rules version (before lane-by-lane play) cannot be resumed.
+      this.match = data && 'play' in data ? new OnlineMatch(data) : null;
       this.cleanupAt = (await ctx.storage.get<number>('cleanupAt')) ?? null;
     });
   }
@@ -100,9 +101,6 @@ export class MatchRoom extends DurableObject<Env> {
         return;
       case 'pick':
         error = typeof message.cardId === 'string' ? this.match.pick(attachment.player, message.cardId, now) : 'BAD_MESSAGE';
-        break;
-      case 'play':
-        error = LANE_ORDER.includes(message.lane) ? this.match.play(attachment.player, message.lane, now) : 'BAD_MESSAGE';
         break;
       case 'ready':
         error = this.match.ready(attachment.player, now);

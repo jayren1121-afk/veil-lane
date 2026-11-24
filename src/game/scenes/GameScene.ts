@@ -1,1113 +1,834 @@
 import Phaser from 'phaser';
 import {
-  resolveRound,
-  isMatchOver,
+  autoLanePick,
+  bothPicked,
+  Card,
+  cardById,
+  computeLaneSynergy,
+  createMatchState,
+  createRoundPlay,
+  createTurnDeadline,
+  currentPlayLane,
+  getFirstPlayer,
   getScoreString,
-  Placement,
-  Player,
+  isRoundPlayComplete,
+  isTurnExpired,
   Lane,
   LANE_ORDER,
-  Card,
-  MatchState,
   LaneRevealResult,
-  resolveLaneDuel,
-  createRevealState,
-  revealLane,
-  getRemainingLanes,
-  getRevealOrder,
-  isRevealComplete,
-  getFirstPlayer,
-  otherPlayer,
+  LaneSynergy,
+  LaneSynergyLink,
+  MatchState,
   ORDER_BONUS,
-  GamePhase,
+  otherPlayer,
+  Placement,
+  Player,
+  recordRoundResult,
+  resolveCurrentLane,
+  RoundPlay,
+  seededRandom,
+  submitLanePick,
+  summarizeRound,
 } from '../rules';
 import { CARDS } from '../data/cards';
 import { CARD_BACK_KEY, cardArtPath, cardBackPath } from '../data/art';
 import { t } from '../i18n';
 import { createCardBack, createCardFace, CardView } from './cardView';
 import { setupSceneMusic } from './musicToggle';
-import {
-  BATTLE_TURN_SECONDS,
-  createTurnDeadline,
-  isTurnExpired,
-  pickRandomLane,
-} from '../rules';
 import type { MatchView } from '../online/protocol';
 import type { OnlineClient } from '../../net/onlineClient';
 import { bindOnlineScene, mirrorMatchState, opponentName, sideLabel } from './onlineScene';
 import { TurnTimerView } from './turnTimer';
-import {
-  addArtBrighten,
-  addButton,
-  addCardGlow,
-  addPanel,
-  COLORS,
-  countUp,
-  drawBackground,
-  drawHeader,
-  glowText,
-  hexToInt,
-  laneColor,
-} from './theme';
+import { playCoinFlip } from './coinFlip';
+import { addButton, addPanel, COLORS, drawBackground, glowText, hexToInt, laneColor } from './theme';
 
-const WIDTH = 1200;
-const CARD_W = 126;
-const CARD_H = 168;
-const CARD_ART_H = 132;
-const LANE_CENTERS = [180, 390, 600, 810, 1020];
-const P2_CARD_Y = 164;
-const P1_CARD_Y = 438;
-const LANE_BUTTON_Y = 318;
+const COLUMN_X = [190, 360, 530, 700, 870];
+const SLOT_W = 104;
+const SLOT_H = 138;
+const TOP_Y = 158;
+const BOTTOM_Y = 384;
+const TOP_SCORE_Y = 244;
+const BOTTOM_SCORE_Y = 298;
+const LANE_LABEL_Y = 271;
+const OFFER_X = [420, 640];
+const OFFER_Y = 642;
+const OFFER_W = 150;
+const OFFER_H = 200;
+const SIDE_X = 1070;
+/** Hot-seat: if the next player does not tap "show my cards", reveal them anyway after this. */
+const HANDOFF_AUTO_MS = 10000;
+const SYNERGY_STEP_MS = 800;
 
-const TABLE_LANE_CENTERS = [280, 440, 600, 760, 920];
-const TABLE_HAND_Y = [696, 678, 668, 678, 696];
-const TABLE_HAND_ROTATION = [-8, -4, 0, 4, 8].map(degrees => Phaser.Math.DegToRad(degrees));
-const TABLE_HAND_W = 144;
-const TABLE_HAND_H = 192;
-const TABLE_DUEL_W = 132;
-const TABLE_DUEL_H = 176;
-const TABLE_OPPONENT_X = 500;
-const TABLE_LEAD_X = 700;
-const TABLE_OPPONENT_Y = 214;
-const TABLE_LEAD_Y = 426;
+type Row = 'top' | 'bottom';
 
-interface TableHandCard extends CardView {
-  lane: Lane;
-  baseY: number;
-  baseRotation: number;
-  hitZone: Phaser.GameObjects.Rectangle;
+interface SlotView {
+  container: Phaser.GameObjects.Container;
+  border: Phaser.GameObjects.Rectangle | null;
+  kind: 'empty' | 'back' | 'face';
 }
 
+/**
+ * Lane-by-lane battle. Each lane both players get their own two random cards and secretly
+ * play one; then the lane flips, synergy partners pop out with their tier bonus, and the
+ * lane winner is shown. Used for both local hot-seat and online play.
+ */
 export class GameScene extends Phaser.Scene {
   constructor() {
     super({ key: 'GameScene' });
   }
 
-  private state!: MatchState;
-  private p1Placements: Placement[] = [];
-  private p2Placements: Placement[] = [];
+  // shared
   private currentRound = 1;
-
-  private placedCardsP1 = new Map<Lane, Phaser.GameObjects.Container>();  // face-down P1 cards per lane
-  private placedCardsP2 = new Map<Lane, Phaser.GameObjects.Container>();  // face-down P2 cards per lane
-  private faceDownCardBacks = new Map<Lane, Phaser.GameObjects.Rectangle[]>();
+  private bottomPlayer: Player = Player.P1;
+  private lead: Player = Player.P1;
+  private slots = new Map<string, SlotView>();
+  private scoreTexts = new Map<string, Phaser.GameObjects.Text>();
   private laneLabels = new Map<Lane, Phaser.GameObjects.Text>();
-  private laneButtons = new Map<Lane, Phaser.GameObjects.Rectangle>();
+  private laneHighlights = new Map<Lane, Phaser.GameObjects.Rectangle>();
+  private offerObjects: Phaser.GameObjects.GameObject[] = [];
+  private selectedCardId: string | null = null;
+  private busy = false;
+  private turnTimer!: TurnTimerView;
   private statusText!: Phaser.GameObjects.Text;
-  private revealHintText!: Phaser.GameObjects.Text;
-  private revealBonusText!: Phaser.GameObjects.Text;
+  private promptText!: Phaser.GameObjects.Text;
+  private bonusText!: Phaser.GameObjects.Text;
   private scoreText!: Phaser.GameObjects.Text;
   private progressText!: Phaser.GameObjects.Text;
-  private resultGroup!: Phaser.GameObjects.Container;
-  
-  private revealState!: ReturnType<typeof createRevealState>;
-  private isRevealing = false;
-  private laneRevealResults: LaneRevealResult[] = [];
+  private confirmButton: Phaser.GameObjects.Rectangle | null = null;
+  private confirmText: Phaser.GameObjects.Text | null = null;
+  private shownResults = 0;
 
-  private tableHands = new Map<Lane, TableHandCard>();
-  private tableBacks = new Map<Lane, Phaser.GameObjects.Container>();
-  private tablePlayed = new Set<Lane>();
-  private tableOrder: Lane[] = [];
-  private tableResults: LaneRevealResult[] = [];
-  private tableLeadPlayer!: Player;
-  private tableSelectedLane: Lane | null = null;
-  private tableBusy = false;
-  private tableAdvancePending = false;
-  private tableNextTimer: Phaser.Time.TimerEvent | null = null;
-  private tableStageObjects: Phaser.GameObjects.GameObject[] = [];
-  private tableActionButton: Phaser.GameObjects.Rectangle | null = null;
-  private tableActionText: Phaser.GameObjects.Text | null = null;
-  private tableStatusText!: Phaser.GameObjects.Text;
-  private tableProgressText!: Phaser.GameObjects.Text;
-  private tableScoreText!: Phaser.GameObjects.Text;
-
-  /** Player whose hand is drawn face-up at the bottom (lead locally, always "me" online). */
-  private bottomPlayer: Player = Player.P1;
-  private turnTimer!: TurnTimerView;
+  // local hot-seat
+  private state!: MatchState;
+  private play: RoundPlay | null = null;
+  private picker: Player | null = null;
+  private lastPicker: Player | null = null;
   private localDeadline: number | null = null;
-  private timerTick: Phaser.Time.TimerEvent | null = null;
+  private handoffTimer: Phaser.Time.TimerEvent | null = null;
+  private needCoin = false;
+  private random: () => number = Math.random;
+
+  // online
+  private initOnline = false;
+  private showCoin = false;
   private online: OnlineClient | null = null;
   private view: MatchView | null = null;
-  private animatedCount = 0;
   private leavingOnline = false;
-  private playPending = false;
+  private pickPendingUntil = 0;
+  private pickPendingLane = -1;
+  private renderedOfferLane = -1;
 
-  init(data: any) {
+  init(data: { online?: boolean; showCoin?: boolean; matchState?: MatchState; round?: number }) {
+    this.slots = new Map();
+    this.scoreTexts = new Map();
+    this.laneLabels = new Map();
+    this.laneHighlights = new Map();
+    this.offerObjects = [];
+    this.selectedCardId = null;
+    this.busy = false;
+    this.confirmButton = null;
+    this.confirmText = null;
+    this.shownResults = 0;
+    this.play = null;
+    this.picker = null;
+    this.lastPicker = null;
+    this.localDeadline = null;
+    this.handoffTimer = null;
     this.online = null;
     this.view = null;
-    this.animatedCount = 0;
     this.leavingOnline = false;
-    this.playPending = false;
-    this.localDeadline = null;
-    this.timerTick = null;
-    if (data?.online) {
-      // Online: only my own cards are known up front; opponent cards arrive lane by lane.
-      this.view = null;
-      this.state = undefined as unknown as MatchState;
-      this.p1Placements = [];
-      this.p2Placements = [];
-      this.currentRound = 1;
-      this.initOnline = true;
-      return;
-    }
-    this.initOnline = false;
-    this.state = data.matchState;
-    this.p1Placements = data.p1Placements;
-    this.p2Placements = data.p2Placements;
-    this.currentRound = data.round || 1;
+    this.pickPendingUntil = 0;
+    this.pickPendingLane = -1;
+    this.renderedOfferLane = -1;
+    this.initOnline = Boolean(data?.online);
+    this.showCoin = Boolean(data?.showCoin);
+    if (this.initOnline) return;
+    this.needCoin = !data?.matchState;
+    // Optional ?seed=N makes local deals reproducible (handy for demos and recordings).
+    const seed = GameScene.urlSeed();
+    this.state = data?.matchState ?? createMatchState(seed);
+    this.currentRound = data?.round ?? this.state.currentRound;
+    this.random = seed === undefined ? Math.random : seededRandom(seed * 7 + this.currentRound);
   }
 
-  private initOnline = false;
-
-  /** Label for a side: P1/P2 locally, "YOU"/nickname online. */
-  private label(player: Player): string {
-    return this.view ? sideLabel(this.view, player) : player;
-  }
-
-  private canAct(): boolean {
-    if (!this.view) return true;
-    return this.view.phase === 'battle' && this.view.battle?.lead === this.view.you;
+  private static urlSeed(): number | undefined {
+    if (typeof window === 'undefined') return undefined;
+    const raw = new URLSearchParams(window.location.search).get('seed');
+    const seed = raw === null ? NaN : Number(raw);
+    return Number.isInteger(seed) && seed >= 0 ? seed : undefined;
   }
 
   preload() {
-    // Load all card art images
     for (const card of CARDS) {
-      this.load.image(card.id, cardArtPath(card.id));
+      if (!this.textures.exists(card.id)) this.load.image(card.id, cardArtPath(card.id));
     }
-    this.load.image(CARD_BACK_KEY, cardBackPath());
+    if (!this.textures.exists(CARD_BACK_KEY)) this.load.image(CARD_BACK_KEY, cardBackPath());
   }
 
   create() {
-    this.placedCardsP1.clear();
-    this.placedCardsP2.clear();
-    this.faceDownCardBacks.clear();
-    this.laneLabels.clear();
-    this.laneButtons.clear();
-    this.laneRevealResults = [];
-    this.tableHands.clear();
-    this.tableBacks.clear();
-    this.tablePlayed.clear();
-    this.tableOrder = [];
-    this.tableResults = [];
-    this.tableSelectedLane = null;
-    this.tableBusy = false;
-    this.tableAdvancePending = false;
-    this.tableNextTimer = null;
-    this.tableStageObjects = [];
     setupSceneMusic(this);
     drawBackground(this);
     if (this.initOnline) {
       const client = bindOnlineScene(this, view => this.onOnlineState(view));
-      if (!client?.state || !client.state.battle) {
+      if (!client?.state?.battle) {
         this.scene.start('LobbyScene');
         return;
       }
       this.online = client;
-      this.applyOnlineView(client.state);
-    }
-    this.createTableView();
-    this.turnTimer = new TurnTimerView(this, 1068, 282);
-    this.timerTick = this.time.addEvent({ delay: 200, loop: true, callback: () => this.updateTurnTimer() });
-    if (this.online) {
-      this.updateOnlineStatus();
-      this.processOnlineReveals();
+      this.view = client.state;
+      this.state = mirrorMatchState(client.state);
+      this.currentRound = client.state.round;
+      this.lead = client.state.battle!.lead;
+      this.bottomPlayer = client.state.you;
     } else {
-      this.startLocalTurn();
+      this.lead = getFirstPlayer(this.state, this.currentRound);
+      this.bottomPlayer = Player.P1;
     }
-  }
+    this.createBoard();
+    this.turnTimer = new TurnTimerView(this, SIDE_X, 470);
+    this.time.addEvent({ delay: 200, loop: true, callback: () => this.updateTimer() });
 
-  // ----- online -----
-
-  private applyOnlineView(view: MatchView) {
-    this.view = view;
-    this.state = mirrorMatchState(view);
-    this.currentRound = view.round;
-    const mine: Placement[] = [];
-    for (const lane of LANE_ORDER) {
-      const id = view.battle?.myCards[lane];
-      const card = id ? CARDS.find(item => item.id === id) : undefined;
-      if (card) mine.push({ card, lane });
-    }
-    if (view.you === Player.P1) this.p1Placements = mine;
-    else this.p2Placements = mine;
-  }
-
-  private onOnlineState(view: MatchView) {
-    if (this.leavingOnline) return;
-    if (view.phase === 'draft' || view.phase === 'waiting') {
-      this.leavingOnline = true;
-      this.scene.start(view.phase === 'draft' ? 'DraftScene' : 'LobbyScene', { online: true });
-      return;
-    }
-    if (view.round !== this.currentRound && view.phase === 'battle') {
-      this.scene.restart({ online: true });
-      return;
-    }
-    const keepBattle = this.view?.battle;
-    this.view = view;
-    this.state = mirrorMatchState(view);
-    if (!view.battle && keepBattle) this.view = { ...view, battle: keepBattle };
-    this.updateOnlineStatus();
-    this.processOnlineReveals();
-  }
-
-  /** Animate the next lane the server has opened that we have not shown yet. */
-  private processOnlineReveals() {
-    const view = this.view;
-    if (!view?.battle || this.tableBusy || this.tableAdvancePending) return;
-    const revealed = view.battle.revealed;
-    if (this.animatedCount < revealed.length) {
-      const result = revealed[this.animatedCount];
-      this.animatedCount += 1;
-      this.animateLane(result.lane, result);
-      return;
-    }
-    if ((view.phase === 'summary' || view.phase === 'matchEnd') && this.animatedCount >= LANE_ORDER.length) {
-      this.leavingOnline = true;
-      this.time.delayedCall(900, () => this.scene.start('SummaryScene', { online: true }));
-    }
-  }
-
-  private updateOnlineStatus() {
-    const view = this.view;
-    if (!view?.battle || this.tableBusy || !this.tableStatusText) return;
-    if (view.phase !== 'battle') return;
-    this.tableStatusText.setText(this.canAct()
-      ? t('online.yourTurnPlay')
-      : t('online.waitingOpponentPlay', { name: opponentName(view) }));
-  }
-
-  // ----- 20s battle turn timer -----
-
-  private startLocalTurn() {
-    if (this.online || this.tableOrder.length >= LANE_ORDER.length) return;
-    this.localDeadline = createTurnDeadline(Date.now());
-  }
-
-  private updateTurnTimer() {
-    if (!this.turnTimer) return;
     if (this.online) {
-      const battle = this.view?.battle;
-      const now = this.online.serverNow();
-      if (!battle || this.view?.phase !== 'battle' || battle.turnDeadline === null
-        || (battle.turnStartsAt !== null && now < battle.turnStartsAt) || this.tableBusy) {
-        this.turnTimer.hide();
-        return;
+      const view = this.view!;
+      if (this.showCoin && view.round === 1 && view.battle!.revealed.length === 0) {
+        playCoinFlip(this, view.round1FirstPlayer, () => undefined);
       }
-      this.turnTimer.update(battle.turnDeadline - now, this.canAct()
-        ? t('online.yourTurnPlay')
-        : t('online.waitingOpponentPlay', { name: opponentName(this.view!) }));
+      this.refreshOnline();
       return;
     }
-    if (this.localDeadline === null || this.tableBusy) {
-      this.turnTimer.hide();
-      return;
-    }
-    const now = Date.now();
-    this.turnTimer.update(this.localDeadline - now, t('timer.caption'));
-    if (isTurnExpired(this.localDeadline, now)) {
-      this.localDeadline = null;
-      const lane = pickRandomLane(this.revealState);
-      if (!lane) return;
-      this.tableStatusText.setText(t('timer.autoPicked', { lane }));
-      this.playTableLane(lane);
+    this.play = createRoundPlay(this.currentRound, {
+      [Player.P1]: this.state.p1UsedCardIds,
+      [Player.P2]: this.state.p2UsedCardIds,
+    } as Record<Player, Set<string>>, this.random);
+    if (this.needCoin && this.currentRound === 1) {
+      playCoinFlip(this, this.state.round1FirstPlayer, () => this.nextLocalPick());
+    } else {
+      this.nextLocalPick();
     }
   }
 
-  private createLaneZones() {
-    const firstPlayer = getFirstPlayer(this.state, this.currentRound);
-    this.add.text(44, P2_CARD_Y, firstPlayer === Player.P2 ? 'P2\n先手' : 'P2', {
-      fontSize: '16px', fontFamily: 'Arial', color: COLORS.p2, fontStyle: 'bold', align: 'center',
-    }).setOrigin(0.5);
-    this.add.text(44, P1_CARD_Y, firstPlayer === Player.P1 ? 'P1\n先手' : 'P1', {
-      fontSize: '16px', fontFamily: 'Arial', color: COLORS.p1, fontStyle: 'bold', align: 'center',
-    }).setOrigin(0.5);
+  // ---------- labels ----------
 
-    for (let i = 0; i < LANE_ORDER.length; i++) {
-      const lane = LANE_ORDER[i];
-      const x = LANE_CENTERS[i];
-      addPanel(this, x, 321, 184, 478, 0x0d2032);
-
-      const laneTint = hexToInt(laneColor(lane));
-      const button = this.add.rectangle(x, LANE_BUTTON_Y, 132, 34, 0x10263a, COLORS.panelAlpha)
-        .setRounded(8).setStrokeStyle(1, laneTint, 0.8).setInteractive({ useHandCursor: true });
-      const laneLabel = this.add.text(x, LANE_BUTTON_Y, lane, {
-        fontSize: '11px', fontFamily: 'Arial', color: laneColor(lane), fontStyle: 'bold',
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-      button.on('pointerdown', () => this.onLaneSelect(lane));
-      laneLabel.on('pointerdown', () => this.onLaneSelect(lane));
-      this.laneButtons.set(lane, button);
-      button.on('pointerover', () => this.setLaneHighlight(lane, true));
-      button.on('pointerout', () => this.setLaneHighlight(lane, false));
-      laneLabel.on('pointerover', () => this.setLaneHighlight(lane, true));
-      laneLabel.on('pointerout', () => this.setLaneHighlight(lane, false));
-      this.laneLabels.set(lane, laneLabel);
-
-      addPanel(this, x, P2_CARD_Y, CARD_W + 10, CARD_H + 10, 0x0b2034);
-      addPanel(this, x, P1_CARD_Y, CARD_W + 10, CARD_H + 10, 0x0b2034);
-    }
+  private label(player: Player): string {
+    return this.view ? sideLabel(this.view, player) : player;
   }
 
-  private createUI() {
-    drawHeader(this, `第 ${this.currentRound} 局 — 開牌階段`);
-    const firstPlayer = getFirstPlayer(this.state, this.currentRound);
-    this.add.text(30, 58, `本局先手：${firstPlayer}`, {
-      fontSize: '12px', fontFamily: 'Arial', color: COLORS.muted,
-    }).setOrigin(0, 0.5);
-    this.scoreText = this.add.text(WIDTH / 2, 35, getScoreString(this.state), {
-      fontSize: '17px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
-    }).setOrigin(0.5);
-    this.progressText = this.add.text(1170, 35, '', {
-      fontSize: '14px', fontFamily: 'Arial', color: COLORS.gold,
-    }).setOrigin(1, 0.5);
-    this.statusText = this.add.text(WIDTH / 2, 775, '', {
-      fontSize: '15px', fontFamily: 'Arial', color: COLORS.muted,
-    }).setOrigin(0.5);
-    this.revealHintText = this.add.text(WIDTH / 2, 610, '', {
-      fontSize: '22px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
-    }).setOrigin(0.5);
-    glowText(this.revealHintText);
-    this.revealBonusText = this.add.text(WIDTH / 2, 642, '', {
-      fontSize: '15px', fontFamily: 'Arial', color: COLORS.muted,
-    }).setOrigin(0.5);
-    this.resultGroup = this.add.container(0, 0).setDepth(100);
+  private rowOf(player: Player): Row {
+    return player === this.bottomPlayer ? 'bottom' : 'top';
   }
 
-  private updateScore() {
-    this.scoreText.setText(getScoreString(this.state));
+  private key(row: Row, lane: Lane): string {
+    return `${row}:${lane}`;
   }
 
-  private updateProgress() {
-    const revealed = this.revealState.revealOrder.length;
-    const nextBonus = ORDER_BONUS[revealed];
-    this.progressText.setText(nextBonus === undefined
-      ? `已開 ${revealed}/5`
-      : `已開 ${revealed}/5 · 下一路 +${nextBonus}%`);
+  private rowY(row: Row): number {
+    return row === 'top' ? TOP_Y : BOTTOM_Y;
   }
 
-  // Show face-down cards from draft result, then start sequential reveal
-  private showFaceDownCards() {
-    this.placedCardsP1.clear();
-    this.placedCardsP2.clear();
-    this.laneRevealResults = [];
-    this.revealState = createRevealState(getFirstPlayer(this.state, this.currentRound));
-    this.isRevealing = false;
-
-    // Show face-down cards in LANE_ORDER order (one per lane)
-    for (let i = 0; i < LANE_ORDER.length; i++) {
-      const lane = LANE_ORDER[i];
-      const x = LANE_CENTERS[i];
-      const cardBacks: Phaser.GameObjects.Rectangle[] = [];
-
-      // P1 face-down card
-      const p1Place = this.p1Placements.find(p => p.lane === lane);
-      if (p1Place) {
-        const { container, border } = this.createFaceDownCard(x, P1_CARD_Y, lane);
-        cardBacks.push(border);
-        this.placedCardsP1.set(lane, container);
-      }
-
-      // P2 face-down card
-      const p2Place = this.p2Placements.find(p => p.lane === lane);
-      if (p2Place) {
-        const { container, border } = this.createFaceDownCard(x, P2_CARD_Y, lane);
-        cardBacks.push(border);
-        this.placedCardsP2.set(lane, container);
-      }
-
-      this.faceDownCardBacks.set(lane, cardBacks);
-    }
-
-    this.state.phase = GamePhase.Reveal;
-    for (let i = 0; i < LANE_ORDER.length; i++) {
-      this.laneLabels.get(LANE_ORDER[i])?.setText(`${LANE_ORDER[i]}｜點此開牌`);
-    }
-    this.statusText.setText('可點擊任一張蓋牌，或點擊該路按鈕開牌');
-    this.updateRevealHint();
-    this.updateProgress();
+  private columnX(lane: Lane): number {
+    return COLUMN_X[LANE_ORDER.indexOf(lane)];
   }
 
-  private createFaceDownCard(
-    x: number,
-    y: number,
-    lane: Lane,
-  ): { container: Phaser.GameObjects.Container; border: Phaser.GameObjects.Rectangle } {
-    const container = this.add.container(x, y);
-    container.add(addCardGlow(this, 0, 0, CARD_W, CARD_H, laneColor(lane)));
-    container.add(this.add.image(0, 0, CARD_BACK_KEY).setDisplaySize(CARD_W, CARD_H));
-
-    const border = this.add.rectangle(0, 0, CARD_W, CARD_H, 0x000000, 0)
-      .setRounded(7)
-      .setStrokeStyle(2, hexToInt(laneColor(lane)))
-      .setInteractive({ useHandCursor: true });
-    border.on('pointerdown', () => this.onLaneSelect(lane));
-    border.on('pointerover', () => this.setLaneHighlight(lane, true));
-    border.on('pointerout', () => this.setLaneHighlight(lane, false));
-    container.add(border);
-
-    return { container, border };
+  private playerColor(player: Player): string {
+    return player === Player.P1 ? COLORS.p1 : COLORS.p2;
   }
 
-  private setLaneHighlight(lane: Lane, highlighted: boolean) {
-    if (!getRemainingLanes(this.revealState).includes(lane)) return;
+  // ---------- board ----------
 
-    const backs = this.faceDownCardBacks.get(lane) ?? [];
-    for (let i = 0; i < backs.length; i++) {
-      backs[i].setStrokeStyle(highlighted ? 4 : 2,
-        highlighted ? hexToInt(COLORS.gold) : hexToInt(laneColor(lane)));
-    }
-
-    this.placedCardsP1.get(lane)?.setScale(highlighted ? 1.05 : 1);
-    this.placedCardsP2.get(lane)?.setScale(highlighted ? 1.05 : 1);
-
-    this.laneButtons.get(lane)
-      ?.setFillStyle(highlighted ? hexToInt(laneColor(lane)) : 0x10263a, highlighted ? 0.42 : COLORS.panelAlpha)
-      .setStrokeStyle(highlighted ? 3 : 1, hexToInt(laneColor(lane)));
-    this.laneLabels.get(lane)?.setColor(highlighted ? COLORS.title : laneColor(lane));
-  }
-
-  private updateRevealHint(message?: string) {
-    const nextBonus = ORDER_BONUS[this.revealState.revealOrder.length];
-    this.revealHintText.setText(message ?? `先手 ${this.revealState.firstPlayer}：點任一路的卡片開牌`);
-    this.revealBonusText.setText(nextBonus === undefined
-      ? ''
-      : `所選路線雙方各 +${nextBonus}%`);
-  }
-
-  private onLaneSelect(lane: Lane) {
-    if (this.isRevealing || isRevealComplete(this.revealState)) return;
-    const nextState = revealLane(this.revealState, lane);
-    if (!nextState) {
-      this.statusText.setText(`${lane} 已開牌，請選擇尚未揭曉的路線`);
-      return;
-    }
-
-    this.setLaneHighlight(lane, false);
-    this.revealState = nextState;
-    this.updateProgress();
-    const orderIndex = nextState.revealOrder.length - 1;
-    const p1Place = this.p1Placements.find(p => p.lane === lane);
-    const p2Place = this.p2Placements.find(p => p.lane === lane);
-    if (!p1Place || !p2Place) {
-      this.statusText.setText(`缺少 ${lane} 路卡牌，無法開牌`);
-      return;
-    }
-
-    const laneResult = resolveLaneDuel(p1Place.card, p2Place.card, lane, orderIndex);
-    this.laneRevealResults.push(laneResult);
-
-    // Animate flip: scale X to 0 then replace with revealed card
-    const p1Container = this.placedCardsP1.get(lane);
-    const p2Container = this.placedCardsP2.get(lane);
-    if (!p1Container || !p2Container) {
-      return;
-    }
-
-    this.isRevealing = true;
-    const x = LANE_CENTERS[LANE_ORDER.indexOf(lane)];
-    this.statusText.setText(`開牌中：${lane}`);
-    this.updateRevealHint(`正在翻開 ${lane}...`);
-
-    // Close the face-down cards, swap the face while narrow, then open the revealed cards.
-    this.tweens.add({
-      targets: [p1Container, p2Container],
-      scaleX: 0,
-      duration: 150,
-      ease: 'Power2',
-    });
-
-    this.time.delayedCall(160, () => {
-      if (p1Container.active) p1Container.destroy();
-      if (p2Container.active) p2Container.destroy();
-
-      const p1Revealed = this.showRevealedCard(x, P1_CARD_Y, lane, p1Place.card, laneResult.p1WinRate,
-        laneResult.p1Total, laneResult.orderBonus, laneResult.laneWinner === Player.P1,
-        laneResult.laneWinner === Player.P2);
-      const p2Revealed = this.showRevealedCard(x, P2_CARD_Y, lane, p2Place.card, laneResult.p2WinRate,
-        laneResult.p2Total, laneResult.orderBonus, laneResult.laneWinner === Player.P2,
-        laneResult.laneWinner === Player.P1);
-      p1Revealed.setScale(0, 1);
-      p2Revealed.setScale(0, 1);
-      this.tweens.add({ targets: [p1Revealed, p2Revealed], scaleX: 1, duration: 150, ease: 'Power2' });
-
-      const flashes = [P1_CARD_Y, P2_CARD_Y].map(y => this.add.rectangle(x, y, CARD_W + 8, CARD_H + 8, 0xffffff, 0.65)
-        .setBlendMode(Phaser.BlendModes.ADD).setDepth(20));
-      this.tweens.add({ targets: flashes, alpha: 0, duration: 220, ease: 'Sine.Out' });
-
-      // Update status
-      const winnerText = laneResult.laneWinner ? `${laneResult.laneWinner} 對線勝` : '對線平手';
-      const resultColor = laneResult.laneWinner === Player.P1 ? COLORS.win
-        : laneResult.laneWinner === Player.P2 ? COLORS.lose : COLORS.muted;
-      const laneLabel = this.laneLabels.get(lane);
-      laneLabel?.setText(`${lane}｜第 ${orderIndex + 1} 開 +${ORDER_BONUS[orderIndex]}%`)
-        .setFontSize(11).setColor(resultColor).disableInteractive();
-      this.laneButtons.get(lane)?.setFillStyle(0x0d2032, COLORS.panelAlpha)
-        .setStrokeStyle(2, hexToInt(laneColor(lane))).disableInteractive();
-      this.time.delayedCall(160, () => {
-        flashes.forEach(flash => flash.destroy());
-        this.updateProgress();
-        this.isRevealing = false;
-        if (isRevealComplete(this.revealState)) {
-          this.revealHintText.setVisible(false);
-          this.revealBonusText.setVisible(false);
-          this.statusText.setText(`${lane} 開牌完成，正在結算配合...`);
-          this.time.delayedCall(600, () => this.showFinalResult());
-        } else {
-          this.statusText.setText(`${winnerText}｜請選擇下一路`);
-          this.updateRevealHint();
-        }
-      });
-    });
-  }
-
-  // Show a revealed card with win rate below
-  private showRevealedCard(
-    x: number,
-    y: number,
-    lane: Lane,
-    card: Card,
-    winRate: number,
-    total: number,
-    orderBonus: number,
-    isWinner: boolean,
-    isLoser: boolean,
-  ): Phaser.GameObjects.Container {
-    const container = this.add.container(x, y);
-    container.add(addCardGlow(this, 0, 0, CARD_W, CARD_H, laneColor(lane)));
-    const rect = this.add.rectangle(0, 0, CARD_W, CARD_H, hexToInt(card.color), 0.96)
-      .setRounded(7).setInteractive();
-    rect.setStrokeStyle(2, hexToInt(laneColor(lane)));
-    container.add(rect);
-
-    let brighten: Phaser.GameObjects.Rectangle | undefined;
-    if (this.textures.exists(card.id)) {
-      const art = this.add.image(0, -18, card.id).setDisplaySize(CARD_W - 4, CARD_ART_H);
-      container.add(art);
-      brighten = addArtBrighten(this, 0, -18, CARD_W - 4, CARD_ART_H);
-      container.add(brighten);
-    }
-    rect.on('pointerover', () => {
-      container.setScale(1.05);
-      rect.setStrokeStyle(3, hexToInt(laneColor(lane)));
-      brighten?.setAlpha(0.2);
-    });
-    rect.on('pointerout', () => {
-      container.setScale(1);
-      rect.setStrokeStyle(2, hexToInt(laneColor(lane)));
-      brighten?.setAlpha(0.08);
-    });
-
-    container.add(this.add.rectangle(0, 66, CARD_W - 4, 34, 0x0b2034, 0.9).setRounded(5));
-    container.add(this.add.text(0, 65, card.name, {
-      fontSize: '11px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
-      align: 'center', wordWrap: { width: CARD_W - 12, useAdvancedWrap: true },
-    }).setOrigin(0.5));
-    if (isWinner) {
-      container.add(this.add.text(CARD_W / 2 - 4, -CARD_H / 2 + 4, '勝', {
-        fontSize: '13px', fontFamily: 'Arial', color: '#082a19', fontStyle: 'bold',
-        backgroundColor: COLORS.win, padding: { x: 5, y: 2 },
-      }).setOrigin(1, 0));
-    }
-
-    const yValue = y + CARD_H / 2 + 12;
-    const rateColor = isWinner ? COLORS.win : isLoser ? COLORS.lose : COLORS.text;
-    const rateText = this.add.text(x, yValue, '對線 0.0%', {
-      fontSize: '12px', fontFamily: 'Arial', color: rateColor, fontStyle: 'bold',
-    }).setOrigin(0.5);
-    countUp(this, rateText, winRate * 100, value => `對線 ${value.toFixed(1)}%`, 450);
-    const totalText = this.add.text(x, yValue + 17,
-      `順序 +${(orderBonus * 100).toFixed(0)}% → 0.0%`, {
-        fontSize: '11px', fontFamily: 'Arial', color: rateColor, fontStyle: 'bold',
-      }).setOrigin(0.5);
-    countUp(this, totalText, total * 100,
-      value => `順序 +${(orderBonus * 100).toFixed(0)}% → ${value.toFixed(1)}%`, 500);
-    return container;
-  }
-
-  // After all 5 lanes revealed, compute synergies and show final result
-  private showFinalResult() {
-    const result = resolveRound(this.p1Placements, this.p2Placements, this.state, getRevealOrder(this.revealState));
-    this.resultGroup.removeAll(true);
-    this.resultGroup.add(addPanel(this, 600, 665, 1100, 170, 0x0b2034));
-    this.drawSynergyLinks(result.p1Synergy.obviousSynergies, COLORS.p1, 568);
-    this.drawSynergyLinks(result.p2Synergy.obviousSynergies, COLORS.p2, 286);
-    const winnerText = result.roundWinner ? `${result.roundWinner} 贏得本局` : '本局平手';
-    const winnerColor = result.roundWinner === Player.P1 ? COLORS.p1
-      : result.roundWinner === Player.P2 ? COLORS.p2 : COLORS.gold;
-    if (result.roundWinner) {
-      const aura = this.add.ellipse(600, 598, 330, 54, hexToInt(winnerColor), 0.14)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      this.resultGroup.add(aura);
-      this.tweens.add({ targets: aura, alpha: { from: 0.08, to: 0.24 }, scale: { from: 0.94, to: 1.08 },
-        duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
-    }
-    const winnerLabel = this.add.text(600, 598, winnerText, {
-      fontSize: '28px', fontFamily: 'Arial', color: winnerColor, fontStyle: 'bold',
-    }).setOrigin(0.5);
-    this.resultGroup.add(glowText(winnerLabel, winnerColor));
-    const barW = 520;
-    const p1W = barW * result.p1WinRate / (result.p1WinRate + result.p2WinRate);
-    const p1TotalText = this.add.text(600 - barW / 2 - 12, 628, 'P1 總勝率 0.0%', {
-      fontSize: '16px', fontFamily: 'Arial', color: COLORS.p1, fontStyle: 'bold',
-    }).setOrigin(1, 0.5);
-    const p2TotalText = this.add.text(600 + barW / 2 + 12, 628, '0.0% P2 總勝率', {
-      fontSize: '16px', fontFamily: 'Arial', color: COLORS.p2, fontStyle: 'bold',
-    }).setOrigin(0, 0.5);
-    this.resultGroup.add([p1TotalText, p2TotalText]);
-    countUp(this, p1TotalText, result.p1WinRate * 100,
-      value => `P1 總勝率 ${value.toFixed(1)}%`, 700);
-    countUp(this, p2TotalText, result.p2WinRate * 100,
-      value => `${value.toFixed(1)}% P2 總勝率`, 700);
-    this.resultGroup.add(this.add.rectangle(600 - barW / 2, 628, p1W, 12, 0x79b8ff).setOrigin(0, 0.5));
-    this.resultGroup.add(this.add.rectangle(600 - barW / 2 + p1W, 628, barW - p1W, 12, hexToInt(COLORS.lose)).setOrigin(0, 0.5));
-    this.resultGroup.add(this.add.text(600, 652,
-      `對線平均 P1 ${(result.p1MatchupAvg * 100).toFixed(1)}% / P2 ${(result.p2MatchupAvg * 100).toFixed(1)}%　開路 +${(result.orderBonusAvg * 100).toFixed(1)}%　配合 P1 +${(result.p1Synergy.bonus * 100).toFixed(1)}% / P2 +${(result.p2Synergy.bonus * 100).toFixed(1)}%`, {
-        fontSize: '12px', fontFamily: 'Arial', color: COLORS.text,
-      }).setOrigin(0.5));
-
-    const comboText = (team: typeof result.p1Synergy) => {
-      const combos = team.obviousSynergies.slice(0, 4)
-        .map(s => `${s.cardA.name}＋${s.cardB.name}`);
-      if (team.obviousSynergies.length > 4) combos.push(`等 ${team.obviousSynergies.length - 4} 組`);
-      return combos.map(combo => `✦ ${combo}`).join('　') || '無';
-    };
-    this.resultGroup.add(this.add.text(600, 672,
-      `P1 配合（+${(result.p1Synergy.bonus * 100).toFixed(1)}%）：${comboText(result.p1Synergy)}`, {
-        fontSize: '11px', fontFamily: 'Arial', color: COLORS.p1,
-      }).setOrigin(0.5));
-    this.resultGroup.add(this.add.text(600, 689,
-      `P2 配合（+${(result.p2Synergy.bonus * 100).toFixed(1)}%）：${comboText(result.p2Synergy)}`, {
-        fontSize: '11px', fontFamily: 'Arial', color: COLORS.p2,
-      }).setOrigin(0.5));
-    this.resultGroup.add(this.add.text(600, 706, `開牌順序：${result.revealOrder.join(' → ')}`, {
-      fontSize: '11px', fontFamily: 'Arial', color: COLORS.muted,
-    }).setOrigin(0.5));
-
-    this.updateScore();
-    this.statusText.setText('本局結算完成');
-
-    const nextScene = isMatchOver(this.state) ? 'SummaryScene' : 'DraftScene';
-    const buttonLabel = isMatchOver(this.state) ? '查看總結' : '下一局';
-    const button = addButton(this, 600, 732, 220, 28, 0x17334a);
-    const buttonText = this.add.text(600, 732, '', {
-      fontSize: '13px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
-    }).setOrigin(0.5);
-    this.resultGroup.add([button, buttonText]);
-    let secondsLeft = 8;
-    let proceeded = false;
-    const proceed = () => {
-      if (proceeded) return;
-      proceeded = true;
-      if (nextScene === 'SummaryScene') this.scene.start(nextScene, { state: this.state });
-      else this.scene.start(nextScene, { matchState: this.state, round: this.state.currentRound });
-    };
-    const refresh = () => buttonText.setText(`${buttonLabel} ▶（${secondsLeft} 秒後自動）`);
-    refresh();
-    button.on('pointerover', () => button.setFillStyle(0x24536a, 0.95));
-    button.on('pointerout', () => button.setFillStyle(0x17334a, COLORS.panelAlpha));
-    button.on('pointerdown', proceed);
-    this.time.addEvent({
-      delay: 1000,
-      repeat: secondsLeft - 1,
-      callback: () => {
-        if (proceeded) return;
-        secondsLeft--;
-        if (secondsLeft <= 0) proceed();
-        else refresh();
-      },
-    });
-  }
-
-  private drawSynergyLinks(
-    synergies: { laneA: Lane; laneB: Lane }[],
-    color: string,
-    linkY: number,
-  ) {
-    synergies.forEach((synergy, index) => {
-      const laneAIndex = LANE_ORDER.indexOf(synergy.laneA);
-      const laneBIndex = LANE_ORDER.indexOf(synergy.laneB);
-      if (laneAIndex < 0 || laneBIndex < 0 || laneAIndex === laneBIndex) return;
-      const left = Math.min(LANE_CENTERS[laneAIndex], LANE_CENTERS[laneBIndex]) + CARD_W / 2;
-      const right = Math.max(LANE_CENTERS[laneAIndex], LANE_CENTERS[laneBIndex]) - CARD_W / 2;
-      const y = linkY + Math.min(index, 4) * 2;
-      const links = this.add.graphics().setDepth(5);
-      links.lineStyle(2, hexToInt(color), 0.65);
-      links.beginPath();
-      links.moveTo(left, y);
-      links.lineTo(right, y);
-      links.strokePath();
-      this.add.text((left + right) / 2, y - 2, '✦', {
-        fontSize: '13px', fontFamily: 'Arial', color, fontStyle: 'bold',
-      }).setOrigin(0.5).setDepth(6);
-    });
-  }
-
-  private createTableView() {
-    this.tableLeadPlayer = this.view?.battle ? this.view.battle.lead : getFirstPlayer(this.state, this.currentRound);
-    this.bottomPlayer = this.view ? this.view.you : this.tableLeadPlayer;
-    this.revealState = createRevealState(this.tableLeadPlayer);
-    this.state.phase = GamePhase.Reveal;
-
+  private createBoard() {
     this.add.text(28, 22, t('game.title', { round: this.currentRound }), {
       fontSize: '20px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
     }).setOrigin(0, 0.5).setDepth(10);
-    this.add.text(28, 48, t('game.lead', { player: this.label(this.tableLeadPlayer) }), {
+    this.add.text(28, 48, t('game.lead', { player: this.label(this.lead) }), {
       fontSize: '13px', fontFamily: 'Arial', color: COLORS.muted,
     }).setOrigin(0, 0.5).setDepth(10);
-    this.tableScoreText = this.add.text(1172, 24, getScoreString(this.state), {
+    this.scoreText = this.add.text(1172, 24, getScoreString(this.state), {
       fontSize: '16px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
     }).setOrigin(1, 0.5).setDepth(10);
-    this.tableProgressText = this.add.text(1172, 49, t('game.progress', { played: 0 }), {
+    this.progressText = this.add.text(1172, 49, t('game.progress', { played: 0 }), {
       fontSize: '13px', fontFamily: 'Arial', color: COLORS.gold,
     }).setOrigin(1, 0.5).setDepth(10);
 
-    this.add.rectangle(600, 320, 690, 4, hexToInt(COLORS.cyan), 0.12)
-      .setBlendMode(Phaser.BlendModes.ADD).setDepth(1);
-    this.add.rectangle(600, 320, 690, 2, hexToInt(COLORS.cyan), 0.75).setDepth(2);
-    addPanel(this, 136, 319, 238, 352, 0x091a2b).setDepth(2);
-    this.add.text(136, 164, t('game.duelRecord'), {
-      fontSize: '17px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(4);
-    this.add.text(136, 191, t('game.recordHint'), {
-      fontSize: '11px', fontFamily: 'Arial', color: COLORS.muted,
-    }).setOrigin(0.5).setDepth(4);
+    const topPlayer = otherPlayer(this.bottomPlayer);
+    this.add.text(70, TOP_Y, this.label(topPlayer), {
+      fontSize: '15px', fontFamily: 'Arial', color: this.playerColor(topPlayer), fontStyle: 'bold', align: 'center',
+      wordWrap: { width: 110 },
+    }).setOrigin(0.5).setDepth(6);
+    this.add.text(70, BOTTOM_Y, this.label(this.bottomPlayer), {
+      fontSize: '15px', fontFamily: 'Arial', color: this.playerColor(this.bottomPlayer), fontStyle: 'bold', align: 'center',
+      wordWrap: { width: 110 },
+    }).setOrigin(0.5).setDepth(6);
 
-    const leadPlacements = this.bottomPlayer === Player.P1 ? this.p1Placements : this.p2Placements;
     LANE_ORDER.forEach((lane, index) => {
-      const x = TABLE_LANE_CENTERS[index];
-      const back = createCardBack(this, lane, 110, 147);
-      back.container.setPosition(x, 10).setDepth(4);
-      this.tableBacks.set(lane, back.container);
-      this.add.rectangle(x, 98, 86, 22, 0x091725, 0.82).setRounded(6)
-        .setStrokeStyle(1, hexToInt(laneColor(lane)), 0.8).setDepth(5);
-      this.add.text(x, 98, lane, {
-        fontSize: '11px', fontFamily: 'Arial', color: laneColor(lane), fontStyle: 'bold',
+      const x = COLUMN_X[index];
+      const highlight = this.add.rectangle(x, 271, 154, 404, hexToInt(COLORS.gold), 0)
+        .setRounded(10).setStrokeStyle(2, hexToInt(COLORS.gold), 0).setDepth(1);
+      this.laneHighlights.set(lane, highlight);
+      addPanel(this, x, 271, 150, 400, 0x0b1c2e).setDepth(1).setAlpha(0.7);
+      this.add.rectangle(x, LANE_LABEL_Y, 128, 26, 0x091725, 0.92).setRounded(7)
+        .setStrokeStyle(1, hexToInt(laneColor(lane)), 0.9).setDepth(5);
+      const label = this.add.text(x, LANE_LABEL_Y, `${lane} · +${ORDER_BONUS[index]}%`, {
+        fontSize: '12px', fontFamily: 'Arial', color: laneColor(lane), fontStyle: 'bold',
       }).setOrigin(0.5).setDepth(6);
-
-      const placement = leadPlacements.find(item => item.lane === lane);
-      if (!placement) return;
-      const hand = createCardFace(this, placement.card, lane, TABLE_HAND_W, TABLE_HAND_H);
-      hand.container.setPosition(x, TABLE_HAND_Y[index])
-        .setRotation(TABLE_HAND_ROTATION[index]).setDepth(20 + index);
-      const hitZone = this.add.rectangle(x, TABLE_HAND_Y[index], TABLE_HAND_W + 8, TABLE_HAND_H + 8,
-        0xffffff, 0).setDepth(40 + index).setInteractive({ useHandCursor: true });
-      const view: TableHandCard = {
-        ...hand,
-        lane,
-        baseY: TABLE_HAND_Y[index],
-        baseRotation: TABLE_HAND_ROTATION[index],
-        hitZone,
-      };
-      this.tableHands.set(lane, view);
-      hitZone.on('pointerover', () => this.previewHandCard(lane, true));
-      hitZone.on('pointerout', () => this.previewHandCard(lane, false));
-      hitZone.on('pointerdown', () => this.selectHandCard(lane));
+      this.laneLabels.set(lane, label);
+      for (const row of ['top', 'bottom'] as Row[]) {
+        this.setEmptySlot(row, lane);
+        const score = this.add.text(x, row === 'top' ? TOP_SCORE_Y : BOTTOM_SCORE_Y, '', {
+          fontSize: '15px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
+        }).setOrigin(0.5).setDepth(30);
+        this.scoreTexts.set(this.key(row, lane), score);
+      }
     });
 
-    this.add.text(72, 126, t('game.opponentHand', { player: this.label(otherPlayer(this.bottomPlayer)) }), {
-      fontSize: '12px', fontFamily: 'Arial', color: this.bottomPlayer === Player.P1 ? COLORS.p2 : COLORS.p1,
-      fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(6);
-    this.add.text(72, 552, t('game.playArea', { player: this.label(this.bottomPlayer) }), {
-      fontSize: '12px', fontFamily: 'Arial', color: this.bottomPlayer === Player.P1 ? COLORS.p1 : COLORS.p2,
-      fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(6);
-
-    this.tableStatusText = this.add.text(1068, 448, t('game.actionHint'), {
-      fontSize: '13px', fontFamily: 'Arial', color: COLORS.muted,
-      align: 'center', wordWrap: { width: 210 },
+    this.promptText = this.add.text(530, 488, '', {
+      fontSize: '20px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(20);
+    glowText(this.promptText);
+    this.bonusText = this.add.text(530, 511, '', {
+      fontSize: '12px', fontFamily: 'Arial', color: COLORS.muted, align: 'center', wordWrap: { width: 720 },
+    }).setOrigin(0.5).setDepth(20);
+    this.statusText = this.add.text(SIDE_X, 690, '', {
+      fontSize: '13px', fontFamily: 'Arial', color: COLORS.muted, align: 'center', wordWrap: { width: 220 },
     }).setOrigin(0.5).setDepth(60);
-    this.setTableActionButton(t('game.confirmPlay'), () => {
-      if (this.tableSelectedLane) this.playTableLane(this.tableSelectedLane);
-    }, false);
   }
 
-  private previewHandCard(lane: Lane, hovered: boolean) {
-    const hand = this.tableHands.get(lane);
-    if (!hand || this.tablePlayed.has(lane) || this.tableBusy || !this.canAct()) return;
-    if (hovered) {
-      this.tweens.add({
-        targets: hand.container,
-        y: hand.baseY - 44,
-        rotation: 0,
-        scale: lane === this.tableSelectedLane ? 1.06 : 1.04,
-        duration: 180,
-        ease: 'Sine.Out',
+  private clearSlot(row: Row, lane: Lane) {
+    const existing = this.slots.get(this.key(row, lane));
+    existing?.container.destroy();
+    this.slots.delete(this.key(row, lane));
+  }
+
+  private setEmptySlot(row: Row, lane: Lane) {
+    this.clearSlot(row, lane);
+    const container = this.add.container(this.columnX(lane), this.rowY(row)).setDepth(8);
+    container.add(this.add.rectangle(0, 0, SLOT_W, SLOT_H, 0x0a1828, 0.8).setRounded(8)
+      .setStrokeStyle(1, hexToInt(laneColor(lane)), 0.35));
+    container.add(this.add.text(0, 0, t('game.pending'), {
+      fontSize: '11px', fontFamily: 'Arial', color: COLORS.muted,
+    }).setOrigin(0.5));
+    this.slots.set(this.key(row, lane), { container, border: null, kind: 'empty' });
+  }
+
+  private setBackSlot(row: Row, lane: Lane) {
+    if (this.slots.get(this.key(row, lane))?.kind === 'back') return;
+    this.clearSlot(row, lane);
+    const back = createCardBack(this, lane, SLOT_W, SLOT_H);
+    back.container.setPosition(this.columnX(lane), this.rowY(row)).setDepth(8).setScale(0.6);
+    this.tweens.add({ targets: back.container, scale: 1, duration: 220, ease: 'Back.Out' });
+    this.slots.set(this.key(row, lane), { container: back.container, border: back.border, kind: 'back' });
+  }
+
+  private setFaceSlot(row: Row, lane: Lane, card: Card): CardView {
+    this.clearSlot(row, lane);
+    const face = createCardFace(this, card, lane, SLOT_W, SLOT_H, { nameFontSize: '10px' });
+    face.container.setPosition(this.columnX(lane), this.rowY(row)).setDepth(9);
+    this.slots.set(this.key(row, lane), { container: face.container, border: face.border, kind: 'face' });
+    return face;
+  }
+
+  private highlightLane(lane: Lane | null) {
+    for (const [itemLane, rect] of this.laneHighlights) {
+      const on = itemLane === lane;
+      rect.setFillStyle(hexToInt(COLORS.gold), on ? 0.06 : 0).setStrokeStyle(2, hexToInt(COLORS.gold), on ? 0.8 : 0);
+    }
+  }
+
+  private updateHeader() {
+    this.scoreText.setText(getScoreString(this.state));
+    this.progressText.setText(t('game.progress', { played: this.shownResults }));
+  }
+
+  // ---------- offers ----------
+
+  private clearOffers() {
+    this.offerObjects.forEach(object => object.destroy());
+    this.offerObjects = [];
+    this.selectedCardId = null;
+    this.destroyConfirm();
+    this.setPartnerHighlight([], false, this.bottomPlayer);
+    this.setPartnerHighlight([], false, otherPlayer(this.bottomPlayer));
+  }
+
+  /** My played cards this round, as placements (from what has been shown on the board). */
+  private playedFor(player: Player): Placement[] {
+    if (this.play) {
+      return this.play.played[player].map((id, index) => ({ card: cardById(id)!, lane: LANE_ORDER[index] }))
+        .filter(item => item.card);
+    }
+    const battle = this.view?.battle;
+    if (!battle || player !== this.view!.you) return [];
+    const result: Placement[] = [];
+    for (const lane of LANE_ORDER) {
+      const id = battle.myCards[lane];
+      const card = id ? cardById(id) : undefined;
+      if (card) result.push({ card, lane });
+    }
+    return result;
+  }
+
+  private pct(value: number): string {
+    return `${Math.round(value * 100)}`;
+  }
+
+  private renderOffers(player: Player, lane: Lane, offer: string[]) {
+    this.clearOffers();
+    this.highlightLane(lane);
+    const index = LANE_ORDER.indexOf(lane);
+    this.promptText.setText(t('game.pickPrompt', { player: this.label(player), lane }));
+    this.bonusText.setText(`${t('game.orderBonus', { bonus: ORDER_BONUS[index] })}　·　${t('game.pickHint')}`);
+    const played = this.playedFor(player);
+    offer.forEach((id, offerIndex) => {
+      const card = cardById(id);
+      if (!card) return;
+      const synergy = computeLaneSynergy(card, lane, played);
+      const x = OFFER_X[offerIndex] ?? OFFER_X[0];
+      const glowing = synergy.bonus > 0;
+      if (glowing) {
+        const glow = this.add.rectangle(x, OFFER_Y, OFFER_W + 18, OFFER_H + 18, hexToInt(COLORS.gold), 0.12)
+          .setRounded(12).setStrokeStyle(6, hexToInt(COLORS.gold), 0.95).setDepth(18);
+        this.tweens.add({ targets: glow, alpha: { from: 0.55, to: 1 }, scale: { from: 0.98, to: 1.03 },
+          duration: 700, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+        this.offerObjects.push(glow);
+      }
+      const face = createCardFace(this, card, lane, OFFER_W, OFFER_H, { nameFontSize: '13px' });
+      face.container.setPosition(x, OFFER_Y).setDepth(20);
+      if (glowing) face.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
+      this.offerObjects.push(face.container);
+      if (glowing) {
+        const badge = this.add.text(x, OFFER_Y - OFFER_H / 2 - 4, t('game.synergyBadge', { bonus: this.pct(synergy.bonus) }), {
+          fontSize: '15px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
+          backgroundColor: COLORS.gold, padding: { x: 8, y: 3 },
+        }).setOrigin(0.5).setDepth(24);
+        this.offerObjects.push(badge);
+      }
+      const detail = this.add.text(x, OFFER_Y + OFFER_H / 2 + 16, glowing
+        ? synergy.links.map(link => `✦ ${link.card.name} +${this.pct(link.bonus)}%`).join('\n')
+        : t('game.noSynergy'), {
+        fontSize: '12px', fontFamily: 'Arial', color: glowing ? COLORS.gold : COLORS.muted, align: 'center', lineSpacing: 1,
+        fontStyle: glowing ? 'bold' : 'normal',
+      }).setOrigin(0.5, 0).setDepth(24);
+      this.offerObjects.push(detail);
+
+      const hit = this.add.rectangle(x, OFFER_Y, OFFER_W + 10, OFFER_H + 10, 0xffffff, 0)
+        .setDepth(26).setInteractive({ useHandCursor: true });
+      this.offerObjects.push(hit);
+      hit.on('pointerover', () => {
+        if (this.selectedCardId !== id) this.tweens.add({ targets: face.container, y: OFFER_Y - 8, scale: 1.03, duration: 150 });
+        this.setPartnerHighlight(synergy.links, true, player);
       });
-      hand.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
-      return;
-    }
-    if (lane !== this.tableSelectedLane) this.restoreHandCard(hand);
-  }
-
-  private selectHandCard(lane: Lane) {
-    if (this.tableBusy || this.tablePlayed.has(lane) || !this.canAct()) return;
-    if (this.tableSelectedLane === lane) {
-      this.playTableLane(lane);
-      return;
-    }
-
-    if (this.tableSelectedLane) {
-      const previous = this.tableHands.get(this.tableSelectedLane);
-      if (previous) this.restoreHandCard(previous);
-    }
-    this.tableSelectedLane = lane;
-    const hand = this.tableHands.get(lane);
-    if (hand) {
-      this.tweens.add({
-        targets: hand.container,
-        y: hand.baseY - 44,
-        rotation: 0,
-        scale: 1.06,
-        duration: 220,
-        ease: 'Back.Out',
+      hit.on('pointerout', () => {
+        if (this.selectedCardId !== id) this.tweens.add({ targets: face.container, y: OFFER_Y, scale: 1, duration: 150 });
+        this.setPartnerHighlight(synergy.links, false, player);
       });
-      hand.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
-    }
-    this.tableStatusText.setText(t('game.laneSelected', { lane }));
-    this.setTableActionButton(t('game.confirmPlay'), () => this.playTableLane(lane), true);
-  }
-
-  private restoreHandCard(hand: TableHandCard) {
-    this.tweens.add({
-      targets: hand.container,
-      y: hand.baseY,
-      rotation: hand.baseRotation,
-      scale: 1,
-      duration: 180,
-      ease: 'Sine.Out',
+      hit.on('pointerdown', () => this.onOfferClick(id, face, card));
+      face.container.setData('offerId', id);
     });
-    hand.border.setStrokeStyle(2, hexToInt(laneColor(hand.lane)), 0.95);
   }
 
-  private playTableLane(lane: Lane) {
-    if (this.tableBusy || this.tablePlayed.has(lane)) return;
-    if (this.online) {
-      // Server decides; the duel animates when the reveal comes back in the next state.
-      if (this.playPending || !this.canAct() || !revealLane(this.revealState, lane)) return;
-      this.playPending = true;
-      this.time.delayedCall(3000, () => { this.playPending = false; });
-      this.online.send({ type: 'play', lane });
-      this.destroyTableActionButton();
-      this.tableStatusText.setText(t('game.dueling', { lane }));
+  /** While hovering an offer, light up the already-played cards it would synergize with. */
+  private setPartnerHighlight(links: LaneSynergyLink[], on: boolean, player: Player) {
+    const row = this.rowOf(player);
+    for (const lane of LANE_ORDER) {
+      const slot = this.slots.get(this.key(row, lane));
+      if (!slot || slot.kind !== 'face' || !slot.border) continue;
+      const lit = on && links.some(link => link.lane === lane);
+      slot.border.setStrokeStyle(lit ? 4 : 2, hexToInt(lit ? COLORS.gold : laneColor(lane)), lit ? 1 : 0.95);
+    }
+  }
+
+  private onOfferClick(id: string, face: CardView, card: Card) {
+    if (this.busy) return;
+    if (this.selectedCardId === id) {
+      this.confirmPick();
       return;
     }
-    const p1Placement = this.p1Placements.find(item => item.lane === lane);
-    const p2Placement = this.p2Placements.find(item => item.lane === lane);
-    if (!p1Placement || !p2Placement) {
-      this.tableStatusText.setText(t('game.cardMissing', { lane }));
-      return;
+    this.selectedCardId = id;
+    for (const object of this.offerObjects) {
+      if (object instanceof Phaser.GameObjects.Container && object.getData('offerId')) {
+        const selected = object.getData('offerId') === id;
+        this.tweens.add({ targets: object, y: selected ? OFFER_Y - 12 : OFFER_Y, scale: selected ? 1.05 : 1, duration: 180 });
+      }
     }
-    this.localDeadline = null;
-    this.animateLane(lane, resolveLaneDuel(p1Placement.card, p2Placement.card, lane, this.tableOrder.length));
+    void face;
+    this.statusText.setText(t('game.selected', { card: card.name }));
+    this.showConfirm();
   }
 
-  /** Fly my card and the opponent's card to the table, flip, and pop WIN. */
-  private animateLane(lane: Lane, result: LaneRevealResult) {
-    const nextReveal = revealLane(this.revealState, lane);
-    const hand = this.tableHands.get(lane);
-    const back = this.tableBacks.get(lane);
-    if (!nextReveal || !hand || !back) {
-      this.tableStatusText.setText(t('game.cardMissing', { lane }));
-      return;
-    }
-    if (this.tableSelectedLane && this.tableSelectedLane !== lane) {
-      const previous = this.tableHands.get(this.tableSelectedLane);
-      if (previous) this.restoreHandCard(previous);
-    }
-    this.tableBusy = true;
-    this.playPending = false;
-    this.tableSelectedLane = lane;
-    this.revealState = nextReveal;
-    const orderIndex = this.tableOrder.length;
-    this.tableOrder.push(lane);
-    this.tableResults.push(result);
-    this.tableAdvancePending = false;
-    this.destroyTableActionButton();
-    this.tableStatusText.setText(t('game.dueling', { lane }));
-
-    // Bottom hand card lands on the lower table spot, the opponent's card on the upper one.
-    const leadX = TABLE_LEAD_X;
-    const opponentX = TABLE_OPPONENT_X;
-    const leadY = TABLE_LEAD_Y;
-    const opponentY = TABLE_OPPONENT_Y;
-    const opponentCard = this.bottomPlayer === Player.P1 ? result.p2Card : result.p1Card;
-    hand.hitZone.disableInteractive();
-
-    this.tweens.add({
-      targets: hand.container,
-      x: leadX,
-      y: leadY,
-      rotation: 0,
-      scale: TABLE_DUEL_W / TABLE_HAND_W,
-      duration: 520,
-      ease: 'Cubic.InOut',
-    });
-    this.tweens.add({
-      targets: back,
-      x: opponentX,
-      y: opponentY,
-      scale: TABLE_DUEL_W / 110,
-      duration: 520,
-      ease: 'Cubic.InOut',
-    });
-
-    this.time.delayedCall(540, () => {
-      this.tweens.add({ targets: back, scaleX: 0, duration: 160, ease: 'Sine.In' });
-      this.time.delayedCall(170, () => {
-        back.destroy();
-        this.tableBacks.delete(lane);
-        const opponentFace = createCardFace(this, opponentCard, lane, TABLE_DUEL_W, TABLE_DUEL_H);
-        opponentFace.container.setPosition(opponentX, opponentY).setDepth(45).setScale(0, 1);
-        this.tableStageObjects.push(opponentFace.container);
-        this.tweens.add({ targets: opponentFace.container, scaleX: 1, duration: 180, ease: 'Sine.Out' });
-
-        const flash = this.add.rectangle(opponentX, opponentY, TABLE_DUEL_W + 14, TABLE_DUEL_H + 14,
-          0xffffff, 0.72).setBlendMode(Phaser.BlendModes.ADD).setDepth(55);
-        this.tableStageObjects.push(flash);
-        this.tweens.add({ targets: flash, alpha: 0, duration: 300, ease: 'Sine.Out' });
-
-        const orderLabel = this.add.text(600, 320,
-          t('game.orderLabel', { lane, order: orderIndex + 1, bonus: ORDER_BONUS[orderIndex] }), {
-            fontSize: '15px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
-          }).setOrigin(0.5).setDepth(58);
-        this.tableStageObjects.push(orderLabel);
-
-        const p1Score = this.add.text(876, 268, '', {
-          fontSize: '14px', fontFamily: 'Arial', color: result.laneWinner === Player.P1 ? COLORS.win : COLORS.text,
-          fontStyle: 'bold', align: 'left',
-        }).setOrigin(0, 0.5).setDepth(58);
-        const p2Score = this.add.text(876, 302, '', {
-          fontSize: '14px', fontFamily: 'Arial', color: result.laneWinner === Player.P2 ? COLORS.win : COLORS.text,
-          fontStyle: 'bold', align: 'left',
-        }).setOrigin(0, 0.5).setDepth(58);
-        const p1Name = this.label(Player.P1);
-        const p2Name = this.label(Player.P2);
-        countUp(this, p1Score, result.p1WinRate * 100,
-          value => `${p1Name} ${value.toFixed(1)}% + ${(result.orderBonus * 100).toFixed(0)}%`, 450);
-        countUp(this, p2Score, result.p2WinRate * 100,
-          value => `${p2Name} ${value.toFixed(1)}% + ${(result.orderBonus * 100).toFixed(0)}%`, 450);
-        this.tableStageObjects.push(p1Score, p2Score);
-
-        if (result.laneWinner) {
-          const winnerX = result.laneWinner === this.bottomPlayer ? leadX : opponentX;
-          const winnerY = result.laneWinner === this.bottomPlayer ? leadY : opponentY;
-          const winLabel = this.add.text(winnerX + 82, winnerY - 4, 'WIN', {
-            fontSize: '27px', fontFamily: 'Arial', color: COLORS.win, fontStyle: 'bold',
-          }).setOrigin(0, 0.5).setDepth(60).setScale(0.2);
-          glowText(winLabel, COLORS.win, 16);
-          this.tableStageObjects.push(winLabel);
-          this.tweens.add({ targets: winLabel, scale: 1, duration: 380, ease: 'Back.Out' });
-        } else {
-          const drawLabel = this.add.text(600, 356, 'DRAW', {
-            fontSize: '22px', fontFamily: 'Arial', color: COLORS.gold, fontStyle: 'bold',
-          }).setOrigin(0.5).setDepth(60);
-          this.tableStageObjects.push(drawLabel);
-        }
-
-        this.addTableHistoryRow(result, orderIndex);
-        this.tableProgressText.setText(t('game.progress', { played: this.tableOrder.length }));
-        this.tableStatusText.setText(result.laneWinner
-          ? t('game.laneWinner', { lane, player: this.label(result.laneWinner) })
-          : t('game.laneDraw', { lane }));
-
-        this.time.delayedCall(420, () => {
-          if (this.online) {
-            // Online: no buttons; the server waits LANE_REVEAL_PAUSE_MS before the next turn.
-            this.tableNextTimer = this.time.delayedCall(2600, () => this.advanceTableLane(lane));
-            return;
-          }
-          if (this.tableOrder.length === LANE_ORDER.length) {
-            this.tableBusy = true;
-            this.setTableActionButton(t('game.finishRound'), () => this.finishTableRound(), true);
-            this.tableNextTimer = this.time.delayedCall(2500, () => this.finishTableRound());
-          } else {
-            this.setTableActionButton(t('game.nextLane'), () => this.advanceTableLane(lane), true);
-            this.tableNextTimer = this.time.delayedCall(3800, () => this.advanceTableLane(lane));
-          }
-        });
-      });
-    });
-  }
-
-  private addTableHistoryRow(result: LaneRevealResult, orderIndex: number) {
-    const winner = result.laneWinner ?? t('game.draw');
-    const color = result.laneWinner === Player.P1 ? COLORS.p1
-      : result.laneWinner === Player.P2 ? COLORS.p2 : COLORS.gold;
-    const row = this.add.text(39, 222 + orderIndex * 48,
-      t('game.historyRow', {
-        order: orderIndex + 1,
-        lane: result.lane,
-        winner,
-        p1: (result.p1Total * 100).toFixed(1),
-        p2: (result.p2Total * 100).toFixed(1),
-      }), {
-        fontSize: '12px', fontFamily: 'Arial', color, lineSpacing: 4,
-      }).setDepth(5);
-  }
-
-  private advanceTableLane(lane: Lane) {
-    if (this.tableAdvancePending) return;
-    this.tableNextTimer?.remove();
-    this.tableNextTimer = null;
-    this.tableAdvancePending = true;
-    this.destroyTableActionButton();
-    const hand = this.tableHands.get(lane);
-    if (hand) {
-      hand.container.setVisible(false);
-      hand.hitZone.disableInteractive();
-    }
-    this.tablePlayed.add(lane);
-    this.tableStageObjects.forEach(object => object.destroy());
-    this.tableStageObjects = [];
-    this.tableSelectedLane = null;
-    this.tableBusy = false;
-    this.tableAdvancePending = false;
-    this.tableStatusText.setText(t('game.nextLanePrompt', { played: this.tableOrder.length }));
-    if (this.online) {
-      this.updateOnlineStatus();
-      this.processOnlineReveals();
-    } else {
-      this.startLocalTurn();
-    }
-  }
-
-  private finishTableRound() {
-    if (this.tableAdvancePending) return;
-    this.tableNextTimer?.remove();
-    this.tableNextTimer = null;
-    this.tableAdvancePending = true;
-    this.destroyTableActionButton();
-    const result = resolveRound(this.p1Placements, this.p2Placements, this.state, getRevealOrder(this.revealState));
-    this.tableStatusText.setText(t('game.roundComplete'));
-    this.time.delayedCall(650, () => {
-      this.scene.start('SummaryScene', {
-        state: this.state,
-        result,
-        roundNumber: this.currentRound,
-      });
-    });
-  }
-
-  private setTableActionButton(label: string, callback: () => void, visible: boolean) {
-    this.destroyTableActionButton();
-    const button = addButton(this, 1068, 378, 214, 48, 0x17334a).setDepth(70);
-    const text = this.add.text(1068, 378, label, {
+  private showConfirm() {
+    this.destroyConfirm();
+    const button = addButton(this, SIDE_X, 600, 214, 48, 0x17334a).setDepth(70);
+    const text = this.add.text(SIDE_X, 600, t('game.confirmPlay'), {
       fontSize: '16px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(71);
     button.on('pointerover', () => button.setFillStyle(0x24536a, 0.96));
     button.on('pointerout', () => button.setFillStyle(0x17334a, COLORS.panelAlpha));
-    button.on('pointerdown', callback);
-    button.setVisible(visible);
-    text.setVisible(visible);
-    this.tableActionButton = button;
-    this.tableActionText = text;
+    button.on('pointerdown', () => this.confirmPick());
+    this.confirmButton = button;
+    this.confirmText = text;
   }
 
-  private destroyTableActionButton() {
-    this.tableActionButton?.destroy();
-    this.tableActionText?.destroy();
-    this.tableActionButton = null;
-    this.tableActionText = null;
+  private destroyConfirm() {
+    this.confirmButton?.destroy();
+    this.confirmText?.destroy();
+    this.confirmButton = null;
+    this.confirmText = null;
+  }
+
+  private confirmPick() {
+    const id = this.selectedCardId;
+    if (!id || this.busy) return;
+    if (this.online) this.sendOnlinePick(id);
+    else this.localPick(id, false);
+  }
+
+  // ---------- local hot-seat ----------
+
+  /** Pick order alternates per lane (A,B then B,A) so the device changes hands only once per lane. */
+  private localPickOrder(laneIndex: number): Player[] {
+    const other = otherPlayer(this.lead);
+    return laneIndex % 2 === 0 ? [this.lead, other] : [other, this.lead];
+  }
+
+  private nextLocalPick() {
+    const play = this.play;
+    if (!play || this.busy) return;
+    const lane = currentPlayLane(play);
+    if (!lane) return;
+    const next = this.localPickOrder(play.laneIndex).find(player => play.picks[player] === null) ?? null;
+    if (!next) return;
+    this.picker = next;
+    this.highlightLane(lane);
+    if (this.lastPicker !== null && this.lastPicker !== next) this.showHandoff(next, lane);
+    else this.startLocalTurn(next, lane);
+  }
+
+  private showHandoff(player: Player, lane: Lane) {
+    this.clearOffers();
+    this.localDeadline = null;
+    this.promptText.setText(t('game.handoff', { player, other: otherPlayer(player) }));
+    this.bonusText.setText('');
+    OFFER_X.forEach(x => {
+      const back = createCardBack(this, lane, OFFER_W, OFFER_H);
+      back.container.setPosition(x, OFFER_Y).setDepth(20);
+      this.offerObjects.push(back.container);
+    });
+    const button = addButton(this, 530, OFFER_Y, 300, 56, 0x1d4a63).setDepth(40);
+    const text = this.add.text(530, OFFER_Y, t('game.handoffButton', { player }), {
+      fontSize: '18px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(41);
+    this.offerObjects.push(button, text);
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      this.handoffTimer?.remove();
+      this.handoffTimer = null;
+      this.startLocalTurn(player, lane);
+    };
+    button.on('pointerdown', go);
+    this.handoffTimer = this.time.delayedCall(HANDOFF_AUTO_MS, go);
+  }
+
+  private startLocalTurn(player: Player, lane: Lane) {
+    if (!this.play) return;
+    this.renderOffers(player, lane, this.play.offers[player]);
+    this.statusText.setText('');
+    this.localDeadline = createTurnDeadline(Date.now());
+  }
+
+  private localPick(cardId: string, auto: boolean) {
+    const play = this.play;
+    const player = this.picker;
+    if (!play || !player || this.busy) return;
+    const chosen = auto ? autoLanePick(play, player, this.random) : (submitLanePick(play, player, cardId) === null ? cardId : null);
+    if (!chosen) return;
+    this.localDeadline = null;
+    this.lastPicker = player;
+    this.picker = null;
+    this.clearOffers();
+    const lane = currentPlayLane(play)!;
+    this.setBackSlot(this.rowOf(player), lane);
+    if (auto) this.statusText.setText(t('game.autoPicked', { card: cardById(chosen)?.name ?? chosen }));
+    else this.statusText.setText('');
+    if (!bothPicked(play)) {
+      this.time.delayedCall(350, () => this.nextLocalPick());
+      return;
+    }
+    const result = resolveCurrentLane(play, this.random);
+    if (!result) return;
+    this.animateLane(result, () => {
+      if (isRoundPlayComplete(play)) this.finishLocalRound();
+      else this.nextLocalPick();
+    });
+  }
+
+  private finishLocalRound() {
+    const play = this.play!;
+    const result = summarizeRound(play.results, this.lead);
+    recordRoundResult(this.state, result);
+    this.updateHeader();
+    this.promptText.setText(t('game.roundComplete'));
+    this.highlightLane(null);
+    this.time.delayedCall(900, () => {
+      this.scene.start('SummaryScene', { state: this.state, result, roundNumber: this.currentRound });
+    });
+  }
+
+  // ---------- online ----------
+
+  private onOnlineState(view: MatchView) {
+    if (this.leavingOnline) return;
+    if (view.phase === 'waiting') {
+      this.leavingOnline = true;
+      this.scene.start('LobbyScene');
+      return;
+    }
+    if (view.phase === 'battle' && view.round !== this.currentRound) {
+      this.leavingOnline = true;
+      this.scene.restart({ online: true });
+      return;
+    }
+    const keepBattle = this.view?.battle;
+    this.view = view.battle ? view : { ...view, battle: keepBattle ?? null };
+    this.state = mirrorMatchState(view);
+    this.refreshOnline();
+  }
+
+  private refreshOnline() {
+    const view = this.view;
+    const battle = view?.battle;
+    if (!view || !battle || this.busy || this.leavingOnline) return;
+    if (this.shownResults < battle.revealed.length) {
+      const result = battle.revealed[this.shownResults];
+      this.animateLane(result, () => this.refreshOnline());
+      return;
+    }
+    if (view.phase === 'summary' || view.phase === 'matchEnd') {
+      this.leavingOnline = true;
+      this.clearOffers();
+      this.promptText.setText(t('game.roundComplete'));
+      this.time.delayedCall(900, () => this.scene.start('SummaryScene', { online: true }));
+      return;
+    }
+    const lane = battle.currentLane;
+    if (!lane) return;
+    this.highlightLane(lane);
+    const topRow: Row = 'top';
+    if (battle.opponentPicked) this.setBackSlot(topRow, lane);
+    const pending = this.isPickPending(battle.laneIndex);
+    if (battle.myPick || pending) {
+      this.clearOffers();
+      this.setBackSlot('bottom', lane);
+      this.promptText.setText(battle.opponentPicked
+        ? t('game.opponentLocked', { name: opponentName(view) })
+        : t('game.locked', { name: opponentName(view) }));
+      this.bonusText.setText('');
+      this.renderedOfferLane = -1;
+      return;
+    }
+    this.statusText.setText(battle.opponentPicked
+      ? t('game.opponentLocked', { name: opponentName(view) })
+      : t('game.opponentThinking', { name: opponentName(view) }));
+    if (this.renderedOfferLane !== battle.laneIndex) {
+      this.renderedOfferLane = battle.laneIndex;
+      this.renderOffers(view.you, lane, battle.myOffer);
+    }
+  }
+
+  /** A pick we sent for this lane that the server has not confirmed yet. */
+  private isPickPending(laneIndex: number): boolean {
+    return this.pickPendingLane === laneIndex && Date.now() < this.pickPendingUntil;
+  }
+
+  private sendOnlinePick(cardId: string) {
+    if (!this.online || !this.view?.battle) return;
+    this.online.send({ type: 'pick', cardId });
+    this.pickPendingUntil = Date.now() + 3000;
+    this.pickPendingLane = this.view.battle.laneIndex;
+    this.statusText.setText('');
+    this.renderedOfferLane = -1;
+    this.refreshOnline();
+    // If the server rejected the pick, the next refresh after the pending window shows the offers again.
+    this.time.delayedCall(3100, () => this.refreshOnline());
+  }
+
+  // ---------- timer ----------
+
+  private updateTimer() {
+    if (!this.turnTimer) return;
+    if (this.online) {
+      const battle = this.view?.battle;
+      const now = this.online.serverNow();
+      if (!battle || this.view?.phase !== 'battle' || battle.turnDeadline === null || this.busy
+        || (battle.turnStartsAt !== null && now < battle.turnStartsAt)) {
+        this.turnTimer.hide();
+        return;
+      }
+      const mine = !battle.myPick && !this.isPickPending(battle.laneIndex);
+      this.turnTimer.update(battle.turnDeadline - now, mine
+        ? t('online.yourTurnPlay')
+        : t('online.waitingOpponentPlay', { name: opponentName(this.view!) }));
+      return;
+    }
+    if (this.localDeadline === null || this.busy) {
+      this.turnTimer.hide();
+      return;
+    }
+    const now = Date.now();
+    this.turnTimer.update(this.localDeadline - now, `${this.picker ?? ''} ${t('timer.caption')}`);
+    if (isTurnExpired(this.localDeadline, now)) {
+      this.localDeadline = null;
+      this.localPick('', true);
+    }
+  }
+
+  // ---------- lane reveal + synergy pop ----------
+
+  private animateLane(result: LaneRevealResult, onDone: () => void) {
+    this.busy = true;
+    this.clearOffers();
+    this.turnTimer.hide();
+    this.highlightLane(result.lane);
+    const lane = result.lane;
+    const x = this.columnX(lane);
+    this.promptText.setText(t('game.dueling', { lane }));
+    this.bonusText.setText('');
+
+    const sides: { player: Player; row: Row; card: Card; winRate: number; synergy: LaneSynergy; total: number }[] = [
+      { player: Player.P1, row: this.rowOf(Player.P1), card: result.p1Card, winRate: result.p1WinRate, synergy: result.p1Synergy, total: result.p1Total },
+      { player: Player.P2, row: this.rowOf(Player.P2), card: result.p2Card, winRate: result.p2WinRate, synergy: result.p2Synergy, total: result.p2Total },
+    ];
+
+    // 1) Flip both cards face up.
+    const faces = new Map<Row, CardView>();
+    for (const side of sides) {
+      const face = this.setFaceSlot(side.row, lane, side.card);
+      face.container.setScale(0, 1);
+      this.tweens.add({ targets: face.container, scaleX: 1, duration: 220, ease: 'Sine.Out' });
+      faces.set(side.row, face);
+      const flash = this.add.rectangle(x, this.rowY(side.row), SLOT_W + 8, SLOT_H + 8, 0xffffff, 0.6)
+        .setBlendMode(Phaser.BlendModes.ADD).setDepth(40);
+      this.tweens.add({ targets: flash, alpha: 0, duration: 280, onComplete: () => flash.destroy() });
+      const score = this.scoreTexts.get(this.key(side.row, lane))!;
+      score.setText(`${((side.winRate + result.orderBonus) * 100).toFixed(1)}%`).setColor(COLORS.text);
+    }
+
+    // 2) Each synergy partner pops out of its column, flies in beside the new card and adds its tier %.
+    const flipMs = 700;
+    const maxLinks = Math.max(result.p1Synergy.links.length, result.p2Synergy.links.length);
+    for (const side of sides) {
+      let running = side.winRate + result.orderBonus;
+      side.synergy.links.forEach((link, index) => {
+        running += link.bonus;
+        const totalAfter = running;
+        this.time.delayedCall(flipMs + index * SYNERGY_STEP_MS, () =>
+          this.popSynergyPartner(side.row, lane, link, index, totalAfter, faces.get(side.row)!));
+      });
+    }
+
+    // 3) Lane winner.
+    const winnerAt = flipMs + maxLinks * SYNERGY_STEP_MS + (maxLinks > 0 ? 700 : 150);
+    this.time.delayedCall(winnerAt, () => {
+      for (const side of sides) {
+        const score = this.scoreTexts.get(this.key(side.row, lane))!;
+        const won = result.laneWinner === side.player;
+        const lost = result.laneWinner !== null && !won;
+        score.setText(`${(side.total * 100).toFixed(1)}%`)
+          .setColor(won ? COLORS.win : lost ? COLORS.lose : COLORS.gold);
+        const face = faces.get(side.row)!;
+        if (won) {
+          face.border.setStrokeStyle(4, hexToInt(COLORS.win), 1);
+          const tag = this.add.text(x + SLOT_W / 2 - 4, this.rowY(side.row) - SLOT_H / 2 + 4, 'WIN', {
+            fontSize: '14px', fontFamily: 'Arial', color: '#06210f', fontStyle: 'bold',
+            backgroundColor: COLORS.win, padding: { x: 6, y: 2 },
+          }).setOrigin(0.5).setDepth(35).setScale(0);
+          this.tweens.add({ targets: tag, scale: 1, duration: 260, ease: 'Back.Out' });
+        } else if (lost) {
+          face.container.setAlpha(0.72);
+        }
+      }
+      this.shownResults += 1;
+      this.updateHeader();
+      const winner = result.laneWinner;
+      this.promptText.setText(winner
+        ? t('game.laneWinner', { lane, player: this.label(winner) })
+        : t('game.laneDraw', { lane }));
+      this.time.delayedCall(1000, () => {
+        this.busy = false;
+        onDone();
+      });
+    });
+  }
+
+  private popSynergyPartner(row: Row, lane: Lane, link: LaneSynergyLink, index: number, totalAfter: number, target: CardView) {
+    const partnerSlot = this.slots.get(this.key(row, link.lane));
+    const fromX = this.columnX(link.lane);
+    const fromY = this.rowY(row);
+    const toX = this.columnX(lane);
+    const toY = this.rowY(row);
+    const bonusLabel = `+${this.pct(link.bonus)}%`;
+
+    // Partner card in its own column lights up and pulses.
+    if (partnerSlot?.border) {
+      const border = partnerSlot.border;
+      border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
+      this.time.delayedCall(2000, () => {
+        if (border.active) border.setStrokeStyle(2, hexToInt(laneColor(link.lane)), 0.95);
+      });
+    }
+    if (partnerSlot) {
+      this.tweens.add({ targets: partnerSlot.container, scale: 1.14, duration: 180, yoyo: true, ease: 'Sine.Out' });
+      const tag = this.add.text(fromX, fromY + SLOT_H / 2 - 2, bonusLabel, {
+        fontSize: '13px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
+        backgroundColor: COLORS.gold, padding: { x: 5, y: 1 },
+      }).setOrigin(0.5).setDepth(36);
+      this.time.delayedCall(1500, () => tag.destroy());
+    }
+
+    // A copy of the partner flies in and docks beside the newly played card with its tier %.
+    const copy = createCardFace(this, link.card, link.lane, SLOT_W, SLOT_H, { nameFontSize: '10px' });
+    copy.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
+    copy.container.setPosition(fromX, fromY).setDepth(50 + index);
+    const glow = this.add.rectangle(0, 0, SLOT_W + 14, SLOT_H + 14, hexToInt(COLORS.gold), 0.18)
+      .setRounded(10).setStrokeStyle(5, hexToInt(COLORS.gold), 0.9);
+    copy.container.addAt(glow, 0);
+    const tierTag = this.add.text(0, -SLOT_H / 2 - 12, bonusLabel, {
+      fontSize: '22px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
+      backgroundColor: COLORS.gold, padding: { x: 8, y: 2 },
+    }).setOrigin(0.5);
+    copy.container.add(tierTag);
+    const side = toX >= fromX ? -1 : 1;
+    const dockX = toX + side * (SLOT_W * 0.5 + 42) * (index % 2 === 0 ? 1 : -1);
+    const dockY = toY + (row === 'top' ? 52 : -52) + Math.floor(index / 2) * 18;
+
+    const line = this.add.graphics().setDepth(45);
+    line.lineStyle(3, hexToInt(COLORS.gold), 0.85);
+    line.beginPath();
+    line.moveTo(fromX, fromY);
+    line.lineTo(toX, toY);
+    line.strokePath();
+    this.tweens.add({ targets: line, alpha: 0, delay: 500, duration: 500, onComplete: () => line.destroy() });
+
+    this.tweens.add({
+      targets: copy.container,
+      x: dockX,
+      y: dockY,
+      scale: 0.76,
+      duration: 480,
+      ease: 'Back.Out',
+      onComplete: () => {
+        target.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
+        this.tweens.add({ targets: target.container, scale: 1.08, duration: 140, yoyo: true });
+        const score = this.scoreTexts.get(this.key(row, lane));
+        score?.setText(`${(totalAfter * 100).toFixed(1)}%`).setColor(COLORS.gold);
+        if (score) this.tweens.add({ targets: score, scale: 1.3, duration: 140, yoyo: true });
+        const floating = this.add.text(toX, toY, `✦ ${bonusLabel}`, {
+          fontSize: '24px', fontFamily: 'Arial', color: COLORS.gold, fontStyle: 'bold',
+        }).setOrigin(0.5).setDepth(60);
+        glowText(floating);
+        this.tweens.add({ targets: floating, y: toY - 46, alpha: 0, duration: 900, onComplete: () => floating.destroy() });
+        this.tweens.add({ targets: copy.container, alpha: 0, delay: 1700, duration: 450, onComplete: () => copy.container.destroy() });
+      },
+    });
   }
 }

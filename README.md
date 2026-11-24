@@ -1,8 +1,11 @@
 # Veil Lane
 
 Hidden-card lane duel built with Vite + TypeScript + Phaser 4 (Cloud9 x JetBrains "Sky's The Limit" 2026, Event Mini Game).
-Pick one card per lane in secret, then the first player chooses which lane opens next. Lane win rates come from
-aggregated pro-match data; synergies are revealed on the results screen. Best of 3, Fearless.
+Lanes are played in order (Top → Support). Each lane, both players are dealt their own two random cards and secretly
+play one. A card that synergizes with cards you already played glows gold and shows its bonus: per the aggregated
+pro-match synergy table, a card's best partner adds +5%, then +4/+3/+2/+1% (`SYNERGY_TIER`). When the lane flips, the
+partner cards pop out and add their bonus on screen. Lane score = matchup win rate + order bonus (+5…+1%) + synergy.
+Best of 3, Fearless: a card you played is never dealt to you again in the match.
 
 The public Worker for this project is already deployed at
 <https://veil-lane-server.jayren1121.workers.dev>. For the frontend, set
@@ -16,9 +19,9 @@ The public Worker for this project is already deployed at
 - **Local 2-player**: the original hot-seat mode, no server needed.
 - **Accounts**: "Sign in with Google" keeps a nickname and win/loss record. "Play as guest" (nickname only) works
   without any account, so judges can try it instantly.
-- **Battle timer**: every battle decision (choosing and confirming the next lane) has a 20-second countdown
-  (`BATTLE_TURN_SECONDS` in `src/game/rules/constants.ts`). It turns red for the last 5 seconds; on timeout a random
-  unopened lane is played. Online, the server enforces it with Durable Object alarms.
+- **Battle timer**: each lane pick has a 20-second countdown per player (`BATTLE_TURN_SECONDS` in
+  `src/game/rules/constants.ts`). It turns red for the last 5 seconds; on timeout one of the two offered cards is played
+  at random. Online, the server enforces it with Durable Object alarms. Local mode accepts `?seed=N` for reproducible deals.
 
 ## Develop
 

@@ -95,7 +95,7 @@ export class MenuScene extends Phaser.Scene {
     this.styleButton(startButton, () => this.scene.start(hasIdentity() ? 'LobbyScene' : 'LoginScene'));
     this.styleButton(localButton, () => {
       leaveOnline();
-      this.scene.start('DraftScene', {});
+      this.scene.start('GameScene', {});
     });
     this.styleButton(howToButton, () => this.scene.start('HowToPlayScene'));
 

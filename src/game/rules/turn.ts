@@ -1,6 +1,7 @@
 import { MatchState, Player } from './types';
 
-function mulberry32(seed: number): () => number {
+/** Small deterministic PRNG (mulberry32); used for coin flips and reproducible deals. */
+export function seededRandom(seed: number): () => number {
   let value = seed >>> 0;
   return () => {
     value += 0x6d2b79f5;
@@ -12,7 +13,7 @@ function mulberry32(seed: number): () => number {
 }
 
 export function coinFlip(seed?: number): Player {
-  const random = seed === undefined ? Math.random : mulberry32(seed);
+  const random = seed === undefined ? Math.random : seededRandom(seed);
   return random() < 0.5 ? Player.P1 : Player.P2;
 }
 

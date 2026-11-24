@@ -1,10 +1,9 @@
 import Phaser from 'phaser';
 import {
-  DRAFT_SECONDS_PER_PLAYER,
+  BATTLE_TURN_SECONDS,
   LANE_ORDER,
   ORDER_BONUS,
-  SYNERGY_BONUS_MAX,
-  SYNERGY_BONUS_MIN,
+  SYNERGY_TIER,
   TOTAL_ROUNDS,
 } from '../rules';
 import { t } from '../i18n';
@@ -22,7 +21,7 @@ function getPages(): TutorialPage[] {
       title: t('tutorial.page1.title'),
       lines: [
         t('tutorial.page1.line1'),
-        t('tutorial.page1.line2', { seconds: DRAFT_SECONDS_PER_PLAYER }),
+        t('tutorial.page1.line2', { seconds: BATTLE_TURN_SECONDS }),
       ],
     },
     {
@@ -35,8 +34,7 @@ function getPages(): TutorialPage[] {
         t('tutorial.page3.line1'),
         t('tutorial.page3.line2', {
           bonuses: ORDER_BONUS.map(bonus => `+${bonus}%`).join(' / '),
-          min: SYNERGY_BONUS_MIN,
-          max: SYNERGY_BONUS_MAX,
+          tiers: SYNERGY_TIER.map(bonus => `+${bonus}%`).join(' / '),
         }),
         t('tutorial.page3.line3'),
       ],
@@ -149,8 +147,8 @@ export class HowToPlayScene extends Phaser.Scene {
   private drawDraftDiagram() {
     const positions = [390, 495, 600, 705, 810];
     this.addDiagramText(600, 338, t('tutorial.draft.timer'), 14, COLORS.gold);
-    this.addDiagramText(520, 378, t('tutorial.draft.clock', { player: 'P1', seconds: DRAFT_SECONDS_PER_PLAYER }), 20, COLORS.p1);
-    this.addDiagramText(680, 378, t('tutorial.draft.clock', { player: 'P2', seconds: DRAFT_SECONDS_PER_PLAYER }), 20, COLORS.p2);
+    this.addDiagramText(520, 378, t('tutorial.draft.clock', { player: 'P1', seconds: BATTLE_TURN_SECONDS }), 20, COLORS.p1);
+    this.addDiagramText(680, 378, t('tutorial.draft.clock', { player: 'P2', seconds: BATTLE_TURN_SECONDS }), 20, COLORS.p2);
     this.addDiagramText(265, 470, 'P1', 18, COLORS.p1);
     this.addDiagramText(265, 570, 'P2', 18, COLORS.p2);
 
@@ -186,7 +184,7 @@ export class HowToPlayScene extends Phaser.Scene {
     const boxes = [
       { x: 240, label: t('tutorial.score.matchup'), sub: t('tutorial.score.grid'), color: COLORS.p1 },
       { x: 490, label: t('tutorial.score.order'), sub: t('tutorial.score.both'), color: COLORS.gold },
-      { x: 740, label: t('tutorial.score.synergy'), sub: `${SYNERGY_BONUS_MIN}–${SYNERGY_BONUS_MAX}%`, color: COLORS.green },
+      { x: 740, label: t('tutorial.score.synergy'), sub: `+${SYNERGY_TIER[SYNERGY_TIER.length - 1]}–${SYNERGY_TIER[0]}%`, color: COLORS.green },
     ];
     for (const box of boxes) {
       this.addDiagramPanel(box.x, 425, 200, 96, box.color);
