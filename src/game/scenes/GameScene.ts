@@ -39,6 +39,7 @@ import { leaveOnline } from '../../net/onlineClient';
 import { refreshAccount } from '../../net/identity';
 import { createCardBack, createCardFace, CardView } from './cardView';
 import { setupSceneMusic } from './musicToggle';
+import { playCardSfx, preloadCardSfx } from '../audio/sfx';
 import type { MatchView } from '../online/protocol';
 import type { OnlineClient } from '../../net/onlineClient';
 import { bindOnlineScene, mirrorMatchState, opponentName, sideLabel } from './onlineScene';
@@ -256,6 +257,7 @@ export class GameScene extends Phaser.Scene {
       if (!this.textures.exists(card.id)) this.load.image(card.id, cardArtPath(card.id));
     }
     if (!this.textures.exists(CARD_BACK_KEY)) this.load.image(CARD_BACK_KEY, cardBackPath());
+    preloadCardSfx(this);
   }
 
   create() {
@@ -851,6 +853,7 @@ export class GameScene extends Phaser.Scene {
     this.selectedId = view.id;
     if (previous) this.settleCard(previous);
     this.liftCard(view, 1.08, 'Back.Out');
+    playCardSfx(this);
     const options = this.optionsFor(player, view.id);
     this.showGlow(options);
     const card = cardById(view.id)!;
@@ -887,6 +890,7 @@ export class GameScene extends Phaser.Scene {
       this.selectedPartners.add(id);
       if (view) this.liftCard(view, 1.08, 'Back.Out');
     }
+    playCardSfx(this);
     this.updatePartnerConfirm();
   }
 
@@ -918,6 +922,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     const card = cardById(cardId)!;
+    playCardSfx(this);
     const flying = createCardFace(this, card, lane, HAND_W, HAND_H, { nameFontSize: '10px' });
     flying.container.setPosition(view.container.x, view.container.y).setRotation(view.container.rotation)
       .setScale(view.container.scale).setDepth(80);
@@ -956,6 +961,7 @@ export class GameScene extends Phaser.Scene {
       ? this.oppHandObjects[Math.floor(this.oppHandObjects.length / 2)] as Phaser.GameObjects.Container
       : null;
     const back = createCardBack(this, lane, OPP_HAND_W, OPP_HAND_H);
+    playCardSfx(this);
     back.container.setPosition(from?.x ?? HAND_CENTER_X, from?.y ?? OPP_HAND_Y).setDepth(80);
     from?.destroy();
     if (from) this.oppHandObjects = this.oppHandObjects.filter(item => item !== from);

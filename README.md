@@ -117,6 +117,14 @@ and opponents only ever see the nickname.
 Card names and art are original. Lane statistics are aggregated counts derived from GRID pro-match data; no raw data files
 are included.
 
+## Sound effects credits
+
+Card select / play sound: "card-slide-1" from [Casino Audio](https://kenney.nl/assets/casino-audio) by Kenney
+(www.kenney.nl), trimmed to ~0.23 s. Licensed under Creative Commons Zero (CC0)
+(http://creativecommons.org/publicdomain/zero/1.0/); see `public/audio/LICENSE-kenney-casino-audio.txt`.
+It plays when you select a card (main or partner toggle) and when a card flies to the table, at a moderate volume,
+and follows the ♫ ON/OFF toggle.
+
 ## Music credits
 
 "Suonatore di Liuto" by Kevin MacLeod (incompetech.com)
