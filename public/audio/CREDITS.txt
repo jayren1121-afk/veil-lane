@@ -1,5 +1,5 @@
 card.ogg / card.mp3: "card-slide-1" from Casino Audio (1.1) by Kenney (www.kenney.nl),
-trimmed to ~0.23 s, mono. https://kenney.nl/assets/casino-audio
+trimmed to ~0.23 s, mono, lightly compressed and normalized. https://kenney.nl/assets/casino-audio
 
 License: Creative Commons Zero (CC0), see LICENSE-kenney-casino-audio.txt
 http://creativecommons.org/publicdomain/zero/1.0/

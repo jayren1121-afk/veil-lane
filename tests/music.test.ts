@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyGainBoost } from '../src/game/audio/boost';
 import { AudioLike, MusicManager } from '../src/game/audio/music';
-import { MUSIC_TRACKS, MUSIC_TRACK_GAIN, MUSIC_VOLUME, trackForScene } from '../src/game/audio/tracks';
+import { MUSIC_DUCK_LEVEL, MUSIC_DUCK_MS, MUSIC_TRACKS, MUSIC_TRACK_GAIN, MUSIC_TRACK_VOLUME, MUSIC_VOLUME, summaryTrack, trackForScene } from '../src/game/audio/tracks';
 
 class FakeAudio implements AudioLike {
   currentTime = 0;
@@ -119,7 +119,12 @@ describe('background music', () => {
     expect(trackForScene('HowToPlayScene')).toBe('general');
     expect(trackForScene('SummaryScene')).toBe('general');
     expect(trackForScene('DraftScene')).toBe('draft');
-    expect(trackForScene('GameScene')).toBeNull();
+    expect(trackForScene('GameScene')).toBe('draft');
+    for (const scene of ['MenuScene', 'HowToPlayScene', 'SummaryScene', 'LobbyScene', 'LoginScene']) {
+      expect(trackForScene(scene)).toBe('general');
+    }
+    expect(summaryTrack(false)).toBe('draft');
+    expect(summaryTrack(true)).toBe('general');
     expect(trackForScene('UnknownScene')).toBeNull();
   });
 
@@ -141,6 +146,61 @@ describe('background music', () => {
     expect(audios).toHaveLength(1);
     expect(audios[0].playCalls).toBe(1);
     expect(audios[0].volume).toBeCloseTo(MUSIC_VOLUME);
+  });
+
+  it('keeps the battle track running from round to round (game → summary → game)', async () => {
+    vi.useFakeTimers();
+    const audios: FakeAudio[] = [];
+    const manager = new MusicManager(source => {
+      const audio = new FakeAudio(source);
+      audios.push(audio);
+      return audio;
+    }, null);
+
+    manager.setTrack(trackForScene('GameScene'));
+    manager.unlock();
+    await flushPromises();
+    vi.advanceTimersByTime(750);
+    audios[0].currentTime = 42;
+    manager.setTrack(summaryTrack(false));
+    vi.advanceTimersByTime(750);
+    manager.setTrack(trackForScene('GameScene'));
+    vi.advanceTimersByTime(750);
+
+    expect(audios).toHaveLength(1);
+    expect(audios[0].source).toBe(MUSIC_TRACKS.draft);
+    expect(audios[0].playCalls).toBe(1);
+    expect(audios[0].paused).toBe(false);
+    expect(audios[0].currentTime).toBe(42);
+    expect(audios[0].volume).toBeCloseTo(MUSIC_VOLUME * MUSIC_TRACK_VOLUME.draft);
+  });
+
+  it('plays the battle track quieter and ducks it briefly under a card sound', async () => {
+    vi.useFakeTimers();
+    const audios: FakeAudio[] = [];
+    const manager = new MusicManager(source => {
+      const audio = new FakeAudio(source);
+      audios.push(audio);
+      return audio;
+    }, null);
+
+    manager.setTrack('draft');
+    manager.unlock();
+    await flushPromises();
+    vi.advanceTimersByTime(750);
+    const full = MUSIC_VOLUME * MUSIC_TRACK_VOLUME.draft;
+    expect(MUSIC_TRACK_VOLUME.draft).toBeLessThan(MUSIC_TRACK_VOLUME.general);
+    expect(audios[0].volume).toBeCloseTo(full);
+
+    manager.duck();
+    expect(audios[0].volume).toBeCloseTo(full * MUSIC_DUCK_LEVEL);
+    vi.advanceTimersByTime(MUSIC_DUCK_MS + 10);
+    expect(audios[0].volume).toBeCloseTo(full);
+
+    manager.setMuted(true);
+    vi.advanceTimersByTime(750);
+    manager.duck();
+    expect(audios[0].volume).toBe(0);
   });
 
   it('fades out the old track and fades in the newly selected track', async () => {
@@ -165,10 +225,10 @@ describe('background music', () => {
     expect(audios[0].currentTime).toBe(0);
     expect(audios[1].source).toBe(MUSIC_TRACKS.draft);
     expect(audios[1].loop).toBe(true);
-    expect(audios[1].volume).toBeCloseTo(MUSIC_VOLUME);
+    expect(audios[1].volume).toBeCloseTo(MUSIC_VOLUME * MUSIC_TRACK_VOLUME.draft);
   });
 
-  it('fades out and stops music when entering the game scene', async () => {
+  it('fades out and stops music when a scene has no track', async () => {
     vi.useFakeTimers();
     const audio = new FakeAudio(MUSIC_TRACKS.general);
     const manager = new MusicManager(() => audio, null);
@@ -185,7 +245,7 @@ describe('background music', () => {
     expect(manager.getActiveTrack()).toBeNull();
   });
 
-  it('stops and resets the previous track when entering the game while muted', async () => {
+  it('stops and resets the previous track when a scene has no track while muted', async () => {
     const audio = new FakeAudio(MUSIC_TRACKS.general);
     const manager = new MusicManager(() => audio, null);
     manager.setTrack('general');
@@ -240,6 +300,6 @@ describe('background music', () => {
     expect(manager.isMuted()).toBe(false);
     expect(audios).toHaveLength(2);
     expect(audios[1].source).toBe(MUSIC_TRACKS.draft);
-    expect(audios[1].volume).toBeCloseTo(MUSIC_VOLUME);
+    expect(audios[1].volume).toBeCloseTo(MUSIC_VOLUME * MUSIC_TRACK_VOLUME.draft);
   });
 });

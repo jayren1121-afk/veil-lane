@@ -3,8 +3,8 @@ import { getMusicManager } from './music';
 
 /** One short card sound (Kenney Casino Audio "card-slide-1", CC0) for selecting and playing a card. */
 export const CARD_SFX_KEY = 'sfx-card';
-/** Moderate volume so the click sits under the music. */
-export const CARD_SFX_VOLUME = 0.35;
+/** Loud enough to cut through the dense battle track (which also ducks briefly under it). */
+export const CARD_SFX_VOLUME = 0.9;
 
 export function preloadCardSfx(scene: Phaser.Scene): void {
   if (scene.cache.audio.exists(CARD_SFX_KEY)) return;
@@ -22,6 +22,7 @@ export function playCardSfx(scene: Phaser.Scene): void {
     if (!sound || sound.locked || (sound as { noAudio?: boolean }).noAudio) return;
     if (!scene.cache.audio.exists(CARD_SFX_KEY)) return;
     sound.play(CARD_SFX_KEY, { volume: CARD_SFX_VOLUME });
+    getMusicManager().duck();
   } catch {
     // A missing sound must never break the game.
   }

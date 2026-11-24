@@ -1,11 +1,11 @@
 import Phaser from 'phaser';
 import { getMusicManager } from '../audio/music';
-import { trackForScene } from '../audio/tracks';
+import { MusicTrack, trackForScene } from '../audio/tracks';
 import { addButton, COLORS } from './theme';
 
-export function setupSceneMusic(scene: Phaser.Scene): void {
+export function setupSceneMusic(scene: Phaser.Scene, track: MusicTrack = trackForScene(scene.scene.key)): void {
   const music = getMusicManager();
-  music.setTrack(trackForScene(scene.scene.key));
+  music.setTrack(track);
 
   const button = addButton(scene, 1135, 776, 96, 34, 0x17334a).setDepth(2000);
   const label = scene.add.text(1135, 776, '', {

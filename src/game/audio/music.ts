@@ -1,5 +1,14 @@
 import { applyGainBoost, resumeAudioContext } from './boost';
-import { MUSIC_FADE_MS, MUSIC_TRACKS, MUSIC_TRACK_GAIN, MUSIC_VOLUME, MusicTrack } from './tracks';
+import {
+  MUSIC_DUCK_LEVEL,
+  MUSIC_DUCK_MS,
+  MUSIC_FADE_MS,
+  MUSIC_TRACKS,
+  MUSIC_TRACK_GAIN,
+  MUSIC_TRACK_VOLUME,
+  MUSIC_VOLUME,
+  MusicTrack,
+} from './tracks';
 
 export interface AudioLike {
   currentTime: number;
@@ -22,6 +31,7 @@ export class MusicManager {
   private activeTrack: MusicTrack = null;
   private audio: AudioLike | null = null;
   private fadeTimer: ReturnType<typeof setInterval> | null = null;
+  private duckTimer: ReturnType<typeof setTimeout> | null = null;
   private unlocked = false;
   private muted = false;
   private warnedTracks = new Set<MusicTrack>();
@@ -68,6 +78,29 @@ export class MusicManager {
     return this.activeTrack;
   }
 
+  /** Full playback volume for the playing track. */
+  targetVolume(): number {
+    return MUSIC_VOLUME * (this.activeTrack ? MUSIC_TRACK_VOLUME[this.activeTrack] : 1);
+  }
+
+  /**
+   * Dip the music briefly under a sound effect. Skipped while muted, paused or fading so it
+   * never fights a track change.
+   */
+  duck(): void {
+    const audio = this.audio;
+    if (!audio || this.muted || audio.paused || this.fadeTimer !== null) return;
+    if (this.activeTrack !== this.selectedTrack) return;
+    const full = this.targetVolume();
+    audio.volume = full * MUSIC_DUCK_LEVEL;
+    if (this.duckTimer !== null) clearTimeout(this.duckTimer);
+    this.duckTimer = setTimeout(() => {
+      this.duckTimer = null;
+      if (audio !== this.audio || this.fadeTimer !== null || this.muted) return;
+      audio.volume = full;
+    }, MUSIC_DUCK_MS);
+  }
+
   unlock(): void {
     if (this.unlocked) return;
     this.unlocked = true;
@@ -102,7 +135,7 @@ export class MusicManager {
       if (this.audio.paused) {
         this.playAudio(this.audio, this.selectedTrack);
       } else {
-        this.fadeAudio(this.audio, MUSIC_VOLUME);
+        this.fadeAudio(this.audio, this.targetVolume());
       }
       return;
     }
@@ -155,7 +188,7 @@ export class MusicManager {
         this.applySelection();
         return;
       }
-      this.fadeAudio(audio, this.muted ? 0 : MUSIC_VOLUME, this.muted ? () => audio.pause() : undefined);
+      this.fadeAudio(audio, this.muted ? 0 : this.targetVolume(), this.muted ? () => audio.pause() : undefined);
     }).catch(() => {
       if (audio !== this.audio) return;
       audio.volume = 0;
@@ -182,6 +215,10 @@ export class MusicManager {
 
   private fadeAudio(audio: AudioLike, targetVolume: number, onComplete?: () => void): void {
     this.cancelFade();
+    if (this.duckTimer !== null) {
+      clearTimeout(this.duckTimer);
+      this.duckTimer = null;
+    }
     const startVolume = audio.volume;
     if (Math.abs(startVolume - targetVolume) < 0.001) {
       audio.volume = targetVolume;

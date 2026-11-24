@@ -120,9 +120,9 @@ are included.
 ## Sound effects credits
 
 Card select / play sound: "card-slide-1" from [Casino Audio](https://kenney.nl/assets/casino-audio) by Kenney
-(www.kenney.nl), trimmed to ~0.23 s. Licensed under Creative Commons Zero (CC0)
+(www.kenney.nl), trimmed to ~0.23 s, lightly compressed and normalized. Licensed under Creative Commons Zero (CC0)
 (http://creativecommons.org/publicdomain/zero/1.0/); see `public/audio/LICENSE-kenney-casino-audio.txt`.
-It plays when you select a card (main or partner toggle) and when a card flies to the table, at a moderate volume,
+It plays when you select a card (main or partner toggle) and when a card flies to the table; the battle music dips briefly under it,
 and follows the ♫ ON/OFF toggle.
 
 ## Music credits

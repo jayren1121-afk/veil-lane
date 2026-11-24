@@ -16,6 +16,7 @@ import {
   laneColor,
 } from './theme';
 import { setupSceneMusic } from './musicToggle';
+import { summaryTrack } from '../audio/tracks';
 import type { MatchView } from '../online/protocol';
 import type { OnlineClient } from '../../net/onlineClient';
 import { leaveOnline } from '../../net/onlineClient';
@@ -79,10 +80,13 @@ export class SummaryScene extends Phaser.Scene {
   }
 
   create() {
-    setupSceneMusic(this);
     drawBackground(this);
+    const client = this.initOnline ? bindOnlineScene(this, view => this.onOnlineState(view)) : null;
+    const musicMatchOver = this.initOnline
+      ? !client?.state?.lastRound || client.state.phase === 'matchEnd'
+      : !this.state || isMatchOver(this.state);
+    setupSceneMusic(this, summaryTrack(musicMatchOver));
     if (this.initOnline) {
-      const client = bindOnlineScene(this, view => this.onOnlineState(view));
       if (client?.state && client.state.phase === 'matchEnd' && client.state.forfeitedBy && client.state.forfeitedBy !== client.state.you) {
         this.online = client;
         this.onOnlineState(client.state);
