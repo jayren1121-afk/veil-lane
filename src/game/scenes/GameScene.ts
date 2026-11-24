@@ -29,6 +29,7 @@ import {
   seededRandom,
   submitLanePick,
   summarizeRound,
+  usedSynergyPartners,
 } from '../rules';
 import { CARDS } from '../data/cards';
 import { CARD_BACK_KEY, cardArtPath, cardBackPath } from '../data/art';
@@ -58,6 +59,7 @@ const SIDE_X = 1070;
 /** Hot-seat: if the next player does not tap "show my cards", reveal them anyway after this. */
 const HANDOFF_AUTO_MS = 10000;
 const SYNERGY_STEP_MS = 800;
+const USED_PARTNER_RED = '#e0474c';
 
 type Row = 'top' | 'bottom';
 
@@ -97,6 +99,8 @@ export class GameScene extends Phaser.Scene {
   private confirmButton: Phaser.GameObjects.Rectangle | null = null;
   private confirmText: Phaser.GameObjects.Text | null = null;
   private shownResults = 0;
+  /** Board slots (row:lane) whose card was already used as a synergy partner this round. */
+  private usedPartnerSlots = new Set<string>();
 
   // local hot-seat
   private state!: MatchState;
@@ -129,6 +133,7 @@ export class GameScene extends Phaser.Scene {
     this.confirmButton = null;
     this.confirmText = null;
     this.shownResults = 0;
+    this.usedPartnerSlots = new Set();
     this.play = null;
     this.picker = null;
     this.lastPicker = null;
@@ -366,6 +371,12 @@ export class GameScene extends Phaser.Scene {
     return result;
   }
 
+  /** Cards that already served as this player's synergy partner this round (not eligible again). */
+  private usedPartnersFor(player: Player): Set<string> {
+    const results = this.play ? this.play.results : this.view?.battle?.revealed ?? [];
+    return usedSynergyPartners(results, player);
+  }
+
   private pct(value: number): string {
     return `${Math.round(value * 100)}`;
   }
@@ -377,10 +388,11 @@ export class GameScene extends Phaser.Scene {
     this.promptText.setText(t('game.pickPrompt', { player: this.label(player), lane }));
     this.bonusText.setText(`${t('game.orderBonus', { bonus: ORDER_BONUS[index] })}　·　${t('game.pickHint')}`);
     const played = this.playedFor(player);
+    const usedPartners = this.usedPartnersFor(player);
     offer.forEach((id, offerIndex) => {
       const card = cardById(id);
       if (!card) return;
-      const synergy = computeLaneSynergy(card, lane, played);
+      const synergy = computeLaneSynergy(card, lane, played, undefined, usedPartners);
       const x = OFFER_X[offerIndex] ?? OFFER_X[0];
       const glowing = synergy.bonus > 0;
       if (glowing) {
@@ -401,13 +413,22 @@ export class GameScene extends Phaser.Scene {
         }).setOrigin(0.5).setDepth(24);
         this.offerObjects.push(badge);
       }
-      const detail = this.add.text(x, OFFER_Y + OFFER_H / 2 + 16, glowing
-        ? synergy.links.map(link => `✦ ${link.card.name} +${this.pct(link.bonus)}%`).join('\n')
-        : t('game.noSynergy'), {
+      const spent = computeLaneSynergy(card, lane, played).links
+        .filter(link => usedPartners.has(link.card.id));
+      const lines = synergy.links.map(link => `✦ ${link.card.name} +${this.pct(link.bonus)}%`);
+      if (lines.length === 0 && spent.length === 0) lines.push(t('game.noSynergy'));
+      const detail = this.add.text(x, OFFER_Y + OFFER_H / 2 + 16, lines.join('\n'), {
         fontSize: '12px', fontFamily: 'Arial', color: glowing ? COLORS.gold : COLORS.muted, align: 'center', lineSpacing: 1,
         fontStyle: glowing ? 'bold' : 'normal',
       }).setOrigin(0.5, 0).setDepth(24);
       this.offerObjects.push(detail);
+      if (spent.length > 0) {
+        const spentText = this.add.text(x, detail.y + detail.height + 2,
+          spent.map(link => t('game.partnerSpent', { name: link.card.name })).join('\n'), {
+            fontSize: '11px', fontFamily: 'Arial', color: USED_PARTNER_RED, align: 'center',
+          }).setOrigin(0.5, 0).setDepth(24);
+        this.offerObjects.push(spentText);
+      }
 
       const hit = this.add.rectangle(x, OFFER_Y, OFFER_W + 10, OFFER_H + 10, 0xffffff, 0)
         .setDepth(26).setInteractive({ useHandCursor: true });
@@ -432,8 +453,34 @@ export class GameScene extends Phaser.Scene {
       const slot = this.slots.get(this.key(row, lane));
       if (!slot || slot.kind !== 'face' || !slot.border) continue;
       const lit = on && links.some(link => link.lane === lane);
-      slot.border.setStrokeStyle(lit ? 4 : 2, hexToInt(lit ? COLORS.gold : laneColor(lane)), lit ? 1 : 0.95);
+      if (lit) slot.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
+      else this.restoreSlotBorder(row, lane);
     }
+  }
+
+  /** Default edge for a board card: red once it has been used as a partner this round. */
+  private restoreSlotBorder(row: Row, lane: Lane) {
+    const slot = this.slots.get(this.key(row, lane));
+    if (!slot?.border || !slot.border.active) return;
+    if (this.usedPartnerSlots.has(this.key(row, lane))) slot.border.setStrokeStyle(3, hexToInt(USED_PARTNER_RED), 1);
+    else slot.border.setStrokeStyle(2, hexToInt(laneColor(lane)), 0.95);
+  }
+
+  /** Mark a board card as spent for synergy this round: red edge + red tint + small tag. */
+  private markUsedPartner(row: Row, lane: Lane) {
+    const key = this.key(row, lane);
+    const slot = this.slots.get(key);
+    if (!slot || slot.kind !== 'face') return;
+    if (!this.usedPartnerSlots.has(key)) {
+      this.usedPartnerSlots.add(key);
+      slot.container.add(this.add.rectangle(0, 0, SLOT_W, SLOT_H, hexToInt(USED_PARTNER_RED), 0.2).setRounded(7));
+      slot.container.add(this.add.text(0, -SLOT_H / 2 + 30, t('game.partnerUsed'), {
+        fontSize: '10px', fontFamily: 'Arial', color: '#ffffff', fontStyle: 'bold',
+        backgroundColor: USED_PARTNER_RED, padding: { x: 4, y: 1 },
+      }).setOrigin(0.5));
+      if (slot.border) slot.container.bringToTop(slot.border);
+    }
+    this.restoreSlotBorder(row, lane);
   }
 
   private onOfferClick(id: string, face: CardView, card: Card) {
@@ -772,8 +819,8 @@ export class GameScene extends Phaser.Scene {
     if (partnerSlot?.border) {
       const border = partnerSlot.border;
       border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
-      this.time.delayedCall(2000, () => {
-        if (border.active) border.setStrokeStyle(2, hexToInt(laneColor(link.lane)), 0.95);
+      this.time.delayedCall(1600, () => {
+        if (border.active) this.markUsedPartner(row, link.lane);
       });
     }
     if (partnerSlot) {

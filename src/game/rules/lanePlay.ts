@@ -1,7 +1,7 @@
 import { CARDS } from '../data/cards';
 import { OFFERS_PER_LANE } from './constants';
 import { resolveLaneDuel } from './duel';
-import { computeLaneSynergy } from './synergy';
+import { computeLaneSynergy, usedSynergyPartners } from './synergy';
 import { Card, Lane, LANE_ORDER, LaneRevealResult, LaneSynergy, Placement, Player, RoundPlay } from './types';
 
 const PLAYERS = [Player.P1, Player.P2] as const;
@@ -80,15 +80,19 @@ export function playedPlacements(play: RoundPlay, player: Player): Placement[] {
   return result;
 }
 
-/** Synergy each of `player`'s current offers would get from the cards they already played. */
+/**
+ * Synergy each of `player`'s current offers would get from the cards they already played
+ * (partners already used this round are excluded, so they don't glow).
+ */
 export function offerSynergies(play: RoundPlay, player: Player): Record<string, LaneSynergy> {
   const lane = currentPlayLane(play);
   const played = playedPlacements(play, player);
+  const used = usedSynergyPartners(play.results, player);
   const result: Record<string, LaneSynergy> = {};
   if (!lane) return result;
   for (const id of play.offers[player]) {
     const card = CARD_BY_ID.get(id);
-    if (card) result[id] = computeLaneSynergy(card, lane, played);
+    if (card) result[id] = computeLaneSynergy(card, lane, played, undefined, used);
   }
   return result;
 }
@@ -129,6 +133,7 @@ export function resolveCurrentLane(play: RoundPlay, random: () => number = Math.
   const result = resolveLaneDuel(
     p1Card, p2Card, lane, play.laneIndex,
     playedPlacements(play, Player.P1), playedPlacements(play, Player.P2),
+    usedSynergyPartners(play.results, Player.P1), usedSynergyPartners(play.results, Player.P2),
   );
   play.played[Player.P1].push(p1Card.id);
   play.played[Player.P2].push(p2Card.id);

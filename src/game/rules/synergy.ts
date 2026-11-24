@@ -1,7 +1,7 @@
 import { CARDS, getLaneWinRate } from '../data/cards';
 import { getAllSynergies } from '../data/synergies';
 import { SYNERGY_MIN_EDGE, SYNERGY_MIN_GAMES, SYNERGY_TIER } from './constants';
-import { Card, Lane, LaneSynergy, LaneSynergyLink, Placement, SynergyEntry } from './types';
+import { Card, Lane, LaneRevealResult, LaneSynergy, LaneSynergyLink, Placement, Player, SynergyEntry } from './types';
 
 /** Edge of a pair over its expected win rate; 0 unless it clears the "obvious synergy" thresholds. */
 export function computeSynergyEdge(wins: number, total: number, expectedWinRate: number): number {
@@ -75,15 +75,19 @@ export function rankSynergyPartners(
 /**
  * Synergy that `card` played in `lane` gets from the player's already-played cards this round.
  * Each played card that is one of the card's top-five obvious partners adds its tier bonus.
+ * A card already used as a synergy partner earlier this round (`usedPartners`) can't be a
+ * partner again until the next round; it can still be played as a main card.
  */
 export function computeLaneSynergy(
   card: Card,
   lane: Lane,
   played: Placement[],
   ranking: RankedPartner[] = rankSynergyPartners(card.id, lane),
+  usedPartners: ReadonlySet<string> = new Set(),
 ): LaneSynergy {
   const links: LaneSynergyLink[] = [];
   for (const partner of ranking) {
+    if (usedPartners.has(partner.cardId)) continue;
     const placement = played.find(item => item.card.id === partner.cardId && item.lane === partner.lane);
     if (!placement || placement.card.id === card.id) continue;
     links.push({ card: placement.card, lane: placement.lane, edge: partner.edge, rank: partner.rank, bonus: partner.bonus });
@@ -91,3 +95,12 @@ export function computeLaneSynergy(
   return { links, bonus: links.reduce((sum, link) => sum + link.bonus, 0) };
 }
 
+/** Card ids that already served as a synergy partner for `side` in these resolved lanes. */
+export function usedSynergyPartners(results: LaneRevealResult[], side: Player): Set<string> {
+  const used = new Set<string>();
+  for (const result of results) {
+    const synergy = side === Player.P1 ? result.p1Synergy : result.p2Synergy;
+    for (const link of synergy.links) used.add(link.card.id);
+  }
+  return used;
+}

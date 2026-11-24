@@ -3,7 +3,7 @@ import { getMatchup } from '../data/matchups';
 import { getSynergy } from '../data/synergies';
 import { getLaneWinRate } from '../data/cards';
 import { ALPHA, BETA, K, ORDER_BONUS, WIN_RATE_TIE_EPSILON } from './constants';
-import { computeLaneSynergy } from './synergy';
+import { computeLaneSynergy, usedSynergyPartners } from './synergy';
 
 /**
  * Logit function: ln(p / (1 - p))
@@ -216,6 +216,8 @@ export function resolveLaneDuel(
   orderIndex = 0,
   p1Played: Placement[] = [],
   p2Played: Placement[] = [],
+  p1UsedPartners: ReadonlySet<string> = new Set(),
+  p2UsedPartners: ReadonlySet<string> = new Set(),
 ): LaneRevealResult {
   const p1Shrinkage = computeShrinkageWinRate(p1Card, p2Card, lane);
   const p2Shrinkage = computeShrinkageWinRate(p2Card, p1Card, lane);
@@ -228,8 +230,8 @@ export function resolveLaneDuel(
   const matchupDelta = p1MuLogit - p1BaseLogit;
 
   const orderBonus = (ORDER_BONUS[orderIndex] ?? 0) / 100;
-  const p1Synergy = computeLaneSynergy(p1Card, lane, p1Played);
-  const p2Synergy = computeLaneSynergy(p2Card, lane, p2Played);
+  const p1Synergy = computeLaneSynergy(p1Card, lane, p1Played, undefined, p1UsedPartners);
+  const p2Synergy = computeLaneSynergy(p2Card, lane, p2Played, undefined, p2UsedPartners);
   const p1Total = p1WinRate + orderBonus + p1Synergy.bonus;
   const p2Total = p2WinRate + orderBonus + p2Synergy.bonus;
 
@@ -286,7 +288,8 @@ export function summarizeRound(laneResults: LaneRevealResult[], firstPlayer: Pla
 
 /**
  * Resolve a full round from both line-ups, playing lanes in `revealOrder`. Each lane's synergy
- * only counts cards that side played in earlier lanes, exactly as in live play.
+ * only counts cards that side played in earlier lanes and that have not already been used as a
+ * partner this round, exactly as in live play.
  */
 export function resolveRoundScores(
   p1Placements: Placement[],
@@ -304,7 +307,10 @@ export function resolveRoundScores(
     const p2Place = p2Placements.find(p => p.lane === lane);
     if (!p1Place || !p2Place) continue;
 
-    laneResults.push(resolveLaneDuel(p1Place.card, p2Place.card, lane, laneResults.length, p1Played, p2Played));
+    laneResults.push(resolveLaneDuel(
+      p1Place.card, p2Place.card, lane, laneResults.length, p1Played, p2Played,
+      usedSynergyPartners(laneResults, Player.P1), usedSynergyPartners(laneResults, Player.P2),
+    ));
     p1Played.push(p1Place);
     p2Played.push(p2Place);
   }

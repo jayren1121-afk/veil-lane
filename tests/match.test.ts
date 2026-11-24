@@ -221,3 +221,31 @@ describe('Fearless across the match', () => {
     for (const item of p2) expect(state.p2UsedCardIds.has(item.card.id)).toBe(true);
   });
 });
+
+describe('once-per-round synergy partners in live play', () => {
+  it('a used partner stops glowing for later offers and is eligible again next round', () => {
+    let checked = 0;
+    for (let seed = 1; seed < 3000 && checked < 3; seed++) {
+      const random = seeded(seed);
+      const play = createRoundPlay(1, noneUsed(), random);
+      while (!isRoundPlayComplete(play)) {
+        const used = new Set(play.results.flatMap(r => r.p1Synergy.links.map(l => l.card.id)));
+        for (const synergy of Object.values(offerSynergies(play, Player.P1))) {
+          for (const link of synergy.links) expect(used.has(link.card.id)).toBe(false);
+          if (used.size > 0) checked++;
+        }
+        // Prefer a glowing card so partners actually get used.
+        const syn = offerSynergies(play, Player.P1);
+        const glowing = play.offers[Player.P1].find(id => syn[id].bonus > 0) ?? play.offers[Player.P1][0];
+        submitLanePick(play, Player.P1, glowing);
+        submitLanePick(play, Player.P2, play.offers[Player.P2][0]);
+        const result = resolveCurrentLane(play, random)!;
+        for (const link of result.p1Synergy.links) expect(used.has(link.card.id)).toBe(false);
+      }
+      // A new round has no used partners.
+      const next = createRoundPlay(2, { [Player.P1]: play.played[Player.P1], [Player.P2]: play.played[Player.P2] } as Record<Player, string[]>, random);
+      expect(next.results).toEqual([]);
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+});

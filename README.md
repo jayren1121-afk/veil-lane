@@ -4,7 +4,8 @@ Hidden-card lane duel built with Vite + TypeScript + Phaser 4 (Cloud9 x JetBrain
 Lanes are played in order (Top → Support). Each lane, both players are dealt their own two random cards and secretly
 play one. A card that synergizes with cards you already played glows gold and shows its bonus: per the aggregated
 pro-match synergy table, a card's best partner adds +5%, then +4/+3/+2/+1% (`SYNERGY_TIER`). When the lane flips, the
-partner cards pop out and add their bonus on screen. Lane score = matchup win rate + order bonus (+5…+1%) + synergy.
+partner cards pop out and add their bonus on screen. A card can serve as a synergy partner only once per round (it can still
+be played as a main card), and this resets every round. Lane score = matchup win rate + order bonus (+5…+1%) + synergy.
 Best of 3, Fearless: a card you played is never dealt to you again in the match.
 
 The public Worker for this project is already deployed at
