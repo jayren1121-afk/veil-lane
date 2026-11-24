@@ -194,6 +194,13 @@ export const STRINGS = {
   'online.connectionClosed': { zh: '連線已關閉', en: 'CONNECTION CLOSED' },
   'online.waitingReady': { zh: '等待對手…', en: 'WAITING FOR OPPONENT…' },
   'online.backToLobby': { zh: '回到大廳', en: 'BACK TO LOBBY' },
+  'online.opponentReady': { zh: '對手已準備好', en: 'OPPONENT IS READY' },
+  'online.rematch': { zh: '再來一場', en: 'REMATCH' },
+  'online.rematchPrompt': { zh: '再來一場？剩 {seconds} 秒', en: 'REMATCH? {seconds}s LEFT' },
+  'online.rematchWaiting': { zh: '已邀請，等待對手…（{seconds} 秒）', en: 'WAITING FOR OPPONENT… ({seconds}s)' },
+  'online.rematchOffered': { zh: '對手想再來一場（{seconds} 秒）', en: 'OPPONENT WANTS A REMATCH ({seconds}s)' },
+  'online.rematchLeft': { zh: '對手已離開', en: 'OPPONENT LEFT' },
+  'online.rematchClosed': { zh: '時間到，返回大廳…', en: "TIME'S UP. BACK TO THE LOBBY…" },
   'online.versus': { zh: '{me}（{you}）vs {opponent}', en: '{me} ({you}) vs {opponent}' },
   'online.autoNext': { zh: '{seconds} 秒後自動進入下一局', en: 'NEXT ROUND IN {seconds}s' },
 

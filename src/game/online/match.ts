@@ -35,6 +35,8 @@ import type { MatchView, OnlinePhase } from './protocol';
 export const FIRST_ROUND_INTRO_MS = 4500;
 export const ROUND_INTRO_MS = 2500;
 export const SUMMARY_SECONDS = 60;
+/** How long both players have to agree on a rematch before the room closes. */
+export const REMATCH_SECONDS = 60;
 
 export interface Seat {
   name: string;
@@ -64,6 +66,14 @@ export interface OnlineMatchData {
   resultRecorded: boolean;
   /** Player who left mid-match (forfeit); missing in rooms saved before this field existed. */
   forfeitedBy?: Player | null;
+  /** Players who asked for a rematch after the match ended (optional: older saved rooms lack it). */
+  rematch?: Player[];
+  /** Players who went back to the lobby after the match ended. */
+  leftAfterMatch?: Player[];
+  /** When the rematch offer expires (null when none is open). */
+  rematchDeadline?: number | null;
+  /** The rematch offer expired: the room is closing. */
+  rematchClosed?: boolean;
 }
 
 export type JoinResult = { ok: true; player: Player; sessionToken: string; rejoined: boolean } | { ok: false; code: 'ROOM_FULL' };
@@ -91,6 +101,10 @@ export class OnlineMatch {
       seats: {},
       resultRecorded: false,
       forfeitedBy: null,
+      rematch: [],
+      leftAfterMatch: [],
+      rematchDeadline: null,
+      rematchClosed: false,
     }, random);
   }
 
@@ -191,6 +205,7 @@ export class OnlineMatch {
     if (mirror.phase === GamePhase.MatchEnd) {
       this.data.phase = 'matchEnd';
       this.data.summaryDeadline = null;
+      this.openRematch(now);
     } else {
       this.data.phase = 'summary';
       this.data.summaryDeadline = now + LANE_REVEAL_PAUSE_MS + SUMMARY_SECONDS * 1000;
@@ -229,10 +244,58 @@ export class OnlineMatch {
     return null;
   }
 
+  /** After a finished match: `player` wants to play again. When both ask, a fresh Bo3 starts in this room. */
+  rematch(player: Player, now: number): string | null {
+    this.tick(now);
+    const data = this.data;
+    if (data.phase !== 'matchEnd' || data.forfeitedBy || data.rematchDeadline == null) return 'NO_REMATCH';
+    if (data.rematchClosed) return 'REMATCH_EXPIRED';
+    const opponent = player === Player.P1 ? Player.P2 : Player.P1;
+    if (this.opponentGone(opponent)) return 'OPPONENT_LEFT';
+    const list = data.rematch ?? (data.rematch = []);
+    if (!list.includes(player)) list.push(player);
+    if (list.length === 2) this.restartMatch(now);
+    return null;
+  }
+
+  private openRematch(now: number): void {
+    this.data.rematch = [];
+    this.data.leftAfterMatch = [];
+    this.data.rematchDeadline = now + REMATCH_SECONDS * 1000;
+    this.data.rematchClosed = false;
+  }
+
+  /** The opponent went back to the lobby after the match, or is currently disconnected. */
+  private opponentGone(opponent: Player): boolean {
+    const seat = this.data.seats[opponent];
+    return !seat || !seat.connected || (this.data.leftAfterMatch ?? []).includes(opponent);
+  }
+
+  /** New Bo3 with the same players: new coin toss, empty Fearless lists, fresh hands. */
+  private restartMatch(now: number): void {
+    const data = this.data;
+    data.round = 1;
+    data.round1FirstPlayer = this.random() < 0.5 ? Player.P1 : Player.P2;
+    data.p1RoundWins = 0;
+    data.p2RoundWins = 0;
+    data.p1UsedCardIds = [];
+    data.p2UsedCardIds = [];
+    data.play = null;
+    data.roundResults = [];
+    data.matchWinner = null;
+    data.resultRecorded = false;
+    data.forfeitedBy = null;
+    data.rematch = [];
+    data.leftAfterMatch = [];
+    data.rematchDeadline = null;
+    data.rematchClosed = false;
+    this.startRound(now, FIRST_ROUND_INTRO_MS);
+  }
+
   /**
    * `player` leaves the room. While waiting, their seat is freed so someone else can join.
    * Mid-match (battle or summary) it is a forfeit: the match ends at once and the other
-   * player wins. After the match it changes nothing.
+   * player wins. After the match it only withdraws them from the rematch offer.
    */
   leave(player: Player, now: number): string | null {
     this.tick(now);
@@ -241,7 +304,12 @@ export class OnlineMatch {
       delete data.seats[player];
       return null;
     }
-    if (data.phase === 'matchEnd') return null;
+    if (data.phase === 'matchEnd') {
+      const left = data.leftAfterMatch ?? (data.leftAfterMatch = []);
+      if (!left.includes(player)) left.push(player);
+      data.rematch = (data.rematch ?? []).filter(item => item !== player);
+      return null;
+    }
     data.phase = 'matchEnd';
     data.matchWinner = player === Player.P1 ? Player.P2 : Player.P1;
     data.forfeitedBy = player;
@@ -277,6 +345,13 @@ export class OnlineMatch {
         changed = true;
         continue;
       }
+      if (this.data.phase === 'matchEnd' && !this.data.rematchClosed && this.data.rematchDeadline != null
+        && isTurnExpired(this.data.rematchDeadline, now)) {
+        this.data.rematchClosed = true;
+        this.data.rematch = [];
+        changed = true;
+        continue;
+      }
       break;
     }
     return changed;
@@ -287,6 +362,7 @@ export class OnlineMatch {
     switch (this.data.phase) {
       case 'battle': return this.data.turnDeadline;
       case 'summary': return this.data.summaryDeadline;
+      case 'matchEnd': return this.data.rematchClosed ? null : this.data.rematchDeadline ?? null;
       default: return null;
     }
   }
@@ -352,6 +428,21 @@ export class OnlineMatch {
       ready: [...data.ready],
       summaryDeadline: data.summaryDeadline,
       forfeitedBy: data.phase === 'matchEnd' ? data.forfeitedBy ?? null : null,
+      rematch: this.rematchViewFor(player),
+    };
+  }
+
+  private rematchViewFor(player: Player): MatchView['rematch'] {
+    const data = this.data;
+    if (data.phase !== 'matchEnd' || data.forfeitedBy || data.rematchDeadline == null) return null;
+    const opponent = player === Player.P1 ? Player.P2 : Player.P1;
+    const list = data.rematch ?? [];
+    return {
+      you: list.includes(player),
+      opponent: list.includes(opponent),
+      opponentLeft: this.opponentGone(opponent),
+      deadline: data.rematchClosed ? null : data.rematchDeadline,
+      closed: Boolean(data.rematchClosed),
     };
   }
 

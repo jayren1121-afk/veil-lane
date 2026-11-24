@@ -34,6 +34,8 @@ import {
 import { CARDS, getLaneWinRate } from '../data/cards';
 import { CARD_BACK_KEY, cardArtPath, cardBackPath } from '../data/art';
 import { t, tSubject } from '../i18n';
+import { DockSlot, partnerDockLayout } from '../ui/partnerDock';
+import { measureTextWidth } from '../ui/wrapText';
 import { addBackButton, confirmDialog, showOpponentLeft } from './sceneNav';
 import { leaveOnline } from '../../net/onlineClient';
 import { refreshAccount } from '../../net/identity';
@@ -57,6 +59,10 @@ const BOTTOM_Y = 372;
 const MID_Y = 261;
 const SCORE_X = BOARD_X + SLOT_W / 2 + 78;
 const DOCK_X = BOARD_X - SLOT_W / 2 - 66;
+/** How far left of DOCK_X stacked partners may fan out (keeps them on the board). */
+const DOCK_SPAN = 150;
+const PARTNER_SCALE = 0.72;
+const PARTNER_TAG_SIZES = [24, 20, 17, 14, 12];
 const NAME_X = 230;
 const STRIP_X = 740;
 const STRIP_GAP = 30;
@@ -1353,11 +1359,12 @@ export class GameScene extends Phaser.Scene {
     const maxPartners = Math.max(...sides.map(side => side.links.length));
     for (const side of sides) {
       let running = side.winRate;
+      const dock = this.partnerDockPlan(side.links);
       side.links.forEach((link, index) => {
         running += link.bonus;
         const totalAfter = running;
         this.time.delayedCall(FLIP_MS + index * PARTNER_STEP_MS,
-          () => this.popPartner(side.row, link, totalAfter, faces.get(side.row)!, index));
+          () => this.popPartner(side.row, link, totalAfter, faces.get(side.row)!, index, dock.slots[index], dock.fontSize));
       });
     }
 
@@ -1445,7 +1452,27 @@ export class GameScene extends Phaser.Scene {
     return { x: BOARD_X, y: row === 'top' ? -SLOT_H / 2 : HAND_Y };
   }
 
-  private popPartner(row: Row, link: LaneSynergyLink, totalAfter: number, target: CardView, index = 0) {
+  /**
+   * Dock positions and tag font for one side's partners so the "+X%" tags never overlap:
+   * one row while they fit, then alternating above / below, shrinking the font if needed.
+   */
+  private partnerDockPlan(links: LaneSynergyLink[]): { slots: DockSlot[]; fontSize: number } {
+    const widest = links.map(link => `+${this.pct(link.bonus)}%`)
+      .reduce((a, b) => (b.length > a.length ? b : a), '+0%');
+    for (const size of PARTNER_TAG_SIZES) {
+      const tagWidth = (measureTextWidth(widest, `bold ${size}px Arial`) + 16) * PARTNER_SCALE;
+      const slots = partnerDockLayout(links.length, DOCK_SPAN, tagWidth);
+      if (slots) return { slots, fontSize: size };
+    }
+    const fontSize = PARTNER_TAG_SIZES[PARTNER_TAG_SIZES.length - 1];
+    const step = links.length > 1 ? DOCK_SPAN / (links.length - 1) : 0;
+    return { slots: links.map((_, index) => ({ dx: index * step, tagBelow: index % 2 === 1 })), fontSize };
+  }
+
+  private popPartner(
+    row: Row, link: LaneSynergyLink, totalAfter: number, target: CardView, index = 0,
+    slot: DockSlot = { dx: index * 46, tagBelow: false }, tagFontSize = 24,
+  ) {
     if (!this.scene.isActive()) return;
     const from = this.partnerOrigin(row, link);
     const toX = BOARD_X;
@@ -1460,20 +1487,21 @@ export class GameScene extends Phaser.Scene {
     copy.container.setPosition(from.x, from.y).setDepth(50).setScale(0.5);
     copy.container.addAt(this.add.rectangle(0, 0, SLOT_W + 14, SLOT_H + 14, hexToInt(COLORS.gold), 0.18)
       .setRounded(10).setStrokeStyle(5, hexToInt(COLORS.gold), 0.9), 0);
-    copy.container.add(this.add.text(0, -SLOT_H / 2 - 14, bonusLabel, {
-      fontSize: '24px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
+    const tagOffset = SLOT_H / 2 + 8 + tagFontSize / 2;
+    copy.container.add(this.add.text(0, slot.tagBelow ? tagOffset : -tagOffset, bonusLabel, {
+      fontSize: `${tagFontSize}px`, fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
       backgroundColor: COLORS.gold, padding: { x: 8, y: 2 },
     }).setOrigin(0.5));
     this.laneFx.push(copy.container);
-    // Several partners fan out to the left of the main card, each a little further out.
-    const dockY = toY + (row === 'top' ? 12 : -12) + (row === 'top' ? 1 : -1) * index * 10;
+    // Several partners fan out to the left of the main card (see partnerDockPlan).
+    const dockY = toY + (row === 'top' ? 12 : -12);
     copy.container.setDepth(50 + index);
 
     this.tweens.add({
       targets: copy.container,
-      x: DOCK_X - index * 46,
+      x: DOCK_X - slot.dx,
       y: dockY,
-      scale: 0.72,
+      scale: PARTNER_SCALE,
       duration: 520,
       ease: 'Back.Out',
       onComplete: () => {

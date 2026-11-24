@@ -59,12 +59,28 @@ export interface MatchView {
   summaryDeadline: number | null;
   /** Set when the match ended because this player left mid-match (the other player wins). */
   forfeitedBy: Player | null;
+  /** Rematch offer after a finished match (matchEnd only, not after a forfeit). Missing on older servers. */
+  rematch?: RematchView | null;
+}
+
+export interface RematchView {
+  /** This player has asked for a rematch. */
+  you: boolean;
+  /** The opponent has asked for a rematch. */
+  opponent: boolean;
+  /** The opponent went back to the lobby or is disconnected: no rematch possible. */
+  opponentLeft: boolean;
+  /** When the offer expires and the room closes. */
+  deadline: number | null;
+  /** The offer expired; the room is closing and both players go back to the lobby. */
+  closed: boolean;
 }
 
 export type ClientMessage =
   | { type: 'pick'; cardId: string }
   | { type: 'partner'; cardIds: string[] } // Any subset of the partner options (empty = none).
   | { type: 'ready' }
+  | { type: 'rematch' } // After a finished match: play again in the same room (both must ask).
   | { type: 'leave' } // Leave the room: frees the seat while waiting, forfeits mid-match.
   | { type: 'ping' };
 

@@ -8,6 +8,8 @@ import { randomToken } from './session';
 
 /** Idle rooms are wiped after this long without any connected player. */
 const IDLE_CLEANUP_MS = 2 * 60 * 60 * 1000;
+/** After an expired rematch offer, give clients a moment to show it, then close the room. */
+const REMATCH_CLOSE_MS = 8000;
 
 interface SocketAttachment {
   player: Player;
@@ -113,6 +115,9 @@ export class MatchRoom extends DurableObject<Env> {
       case 'ready':
         error = this.match.ready(attachment.player, now);
         break;
+      case 'rematch':
+        error = this.match.rematch(attachment.player, now);
+        break;
       case 'leave':
         error = this.match.leave(attachment.player, now);
         break;
@@ -175,6 +180,16 @@ export class MatchRoom extends DurableObject<Env> {
         }
       }
       if (this.cleanupAt === null) this.cleanupAt = now + IDLE_CLEANUP_MS;
+    }
+    const data = this.match.data;
+    if (data.phase === 'matchEnd' && data.rematchClosed) {
+      // Rematch offer expired: close the room shortly so both players return to the lobby.
+      const closeAt = now + REMATCH_CLOSE_MS;
+      if (this.cleanupAt === null || this.cleanupAt > closeAt) this.cleanupAt = closeAt;
+    } else if (data.phase === 'battle' && this.cleanupAt !== null
+      && this.ctx.getWebSockets().some(socket => socket.readyState === WebSocket.OPEN)) {
+      // A rematch started: the room is in use again.
+      this.cleanupAt = null;
     }
     await this.persist();
     this.broadcast(now);

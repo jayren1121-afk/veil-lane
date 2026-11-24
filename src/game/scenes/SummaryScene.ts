@@ -36,6 +36,10 @@ const SYN_LINE_H = 14;
 const TOTAL_Y = 690;
 const WINNER_Y = 717;
 const FOOTNOTE_Y = 745;
+const BUTTON_Y = 778;
+/** Status note right of the bottom buttons (opponent ready / rematch), kept clear of the ♫ toggle. */
+const NOTE_X = 968;
+const NOTE_W = 200;
 
 function rowY(index: number): number {
   return ROW_Y0 + index * ROW_STEP;
@@ -52,8 +56,9 @@ import type { MatchView } from '../online/protocol';
 import type { OnlineClient } from '../../net/onlineClient';
 import { leaveOnline } from '../../net/onlineClient';
 import { refreshAccount } from '../../net/identity';
-import { bindOnlineScene, mirrorMatchState, opponentName, sideLabel } from './onlineScene';
+import { bindOnlineScene, hideOnlineBanner, mirrorMatchState, opponentName, sideLabel } from './onlineScene';
 import { addBackButton, confirmDialog, showOpponentLeft } from './sceneNav';
+import { addTextButton, UiButton } from './uiButton';
 
 export class SummaryScene extends Phaser.Scene {
   constructor() {
@@ -67,6 +72,10 @@ export class SummaryScene extends Phaser.Scene {
   private readonly revealRows: Phaser.GameObjects.Container[] = [];
 
   private online: OnlineClient | null = null;
+  private readyNote: Phaser.GameObjects.Text | null = null;
+  private rematchButton: UiButton | null = null;
+  private rematchNote: Phaser.GameObjects.Text | null = null;
+  private rematchClosing = false;
   private view: MatchView | null = null;
   private leaving = false;
 
@@ -74,6 +83,10 @@ export class SummaryScene extends Phaser.Scene {
     this.online = null;
     this.view = null;
     this.leaving = false;
+    this.readyNote = null;
+    this.rematchButton = null;
+    this.rematchNote = null;
+    this.rematchClosing = false;
     if (data.online) {
       this.initOnline = true;
       return;
@@ -106,8 +119,71 @@ export class SummaryScene extends Phaser.Scene {
     }
     if (view.phase === 'battle') {
       this.leaving = true;
-      this.scene.start('GameScene', { online: true });
+      // A rematch starts at round 1 with a fresh coin toss.
+      this.scene.start('GameScene', { online: true, showCoin: view.round === 1 && (view.battle?.revealed.length ?? 0) === 0 });
+      return;
     }
+    this.refreshOnlineNotes();
+  }
+
+  /** Online extras under the results: "opponent is ready" between rounds, rematch status after the match. */
+  private refreshOnlineNotes() {
+    const view = this.view;
+    const online = this.online;
+    if (!view || !online || this.leaving) return;
+    const seconds = (deadline: number | null | undefined) =>
+      Math.max(0, Math.ceil(((deadline ?? online.serverNow()) - online.serverNow()) / 1000));
+    if (this.readyNote) {
+      const opponent = view.you === Player.P1 ? Player.P2 : Player.P1;
+      const opponentReady = view.phase === 'summary' && view.ready.includes(opponent) && !view.ready.includes(view.you);
+      this.readyNote.setVisible(opponentReady);
+    }
+    const rematch = view.rematch;
+    if (this.rematchNote && rematch) {
+      let text: string;
+      let color: string = COLORS.text;
+      if (rematch.closed) {
+        text = t('online.rematchClosed');
+        color = COLORS.muted;
+      } else if (rematch.opponentLeft) {
+        text = t('online.rematchLeft');
+        color = COLORS.lose;
+      } else if (rematch.you) {
+        text = t('online.rematchWaiting', { seconds: seconds(rematch.deadline) });
+        color = COLORS.muted;
+      } else if (rematch.opponent) {
+        text = t('online.rematchOffered', { seconds: seconds(rematch.deadline) });
+        color = COLORS.gold;
+      } else {
+        text = t('online.rematchPrompt', { seconds: seconds(rematch.deadline) });
+      }
+      this.setNote(this.rematchNote, text, color);
+      // The rematch note already says the opponent left / the room is closing: no red banner on top.
+      if (rematch.opponentLeft || rematch.closed) hideOnlineBanner(this);
+      const canAsk = !rematch.closed && !rematch.opponentLeft && !rematch.you;
+      this.rematchButton?.setEnabled(canAsk).setVisible(!rematch.opponentLeft && !rematch.closed);
+      if (rematch.closed && !this.rematchClosing) {
+        this.rematchClosing = true;
+        this.time.delayedCall(1800, () => {
+          if (this.leaving) return;
+          this.leaving = true;
+          leaveOnline();
+          this.scene.start('LobbyScene');
+        });
+      }
+    }
+  }
+
+  /** Wrap a status note to NOTE_W (shrinking the font if needed) so it stays inside its area. */
+  private setNote(note: Phaser.GameObjects.Text, text: string, color: string) {
+    let size = 15;
+    let lines: string[] = [];
+    for (; size >= 11; size--) {
+      const font = `bold ${size}px Arial`;
+      lines = wrapLines(text, NOTE_W, value => measureTextWidth(value, font));
+      if (lines.length <= 2 && lines.every(line => measureTextWidth(line, font) <= NOTE_W)) break;
+    }
+    note.setFontSize(Math.max(size, 11)).setText(lines).setColor(color);
   }
 
   create() {
@@ -365,14 +441,6 @@ export class SummaryScene extends Phaser.Scene {
         }).setOrigin(0.5).setDepth(45);
     }
 
-    const button = addButton(this, 600, 780, 260, 40, 0x17334a).setDepth(50);
-    const label = this.add.text(600, 780, matchOver
-      ? (this.online ? t('online.backToLobby') : t('summary.playAgain'))
-      : t('summary.nextRound'), {
-      fontSize: '16px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(51);
-    button.on('pointerover', () => button.setFillStyle(0x24536a, 0.95));
-    button.on('pointerout', () => button.setFillStyle(0x17334a, COLORS.panelAlpha));
     const proceed = () => {
       if (this.online) {
         if (matchOver) {
@@ -381,15 +449,41 @@ export class SummaryScene extends Phaser.Scene {
           this.scene.start('LobbyScene');
         } else {
           this.online.send({ type: 'ready' });
-          label.setText(t('online.waitingReady'));
+          main.setText(t('online.waitingReady'));
+          this.readyNote?.setVisible(false);
         }
         return;
       }
       if (matchOver) this.scene.start('GameScene', {});
       else this.scene.start('GameScene', { matchState: this.state, round: this.state.currentRound });
     };
-    button.on('pointerdown', proceed);
-    label.setInteractive({ useHandCursor: true }).on('pointerdown', proceed);
+    // Online after a finished match (newer servers): REMATCH next to BACK TO LOBBY.
+    const offerRematch = Boolean(this.online && matchOver && this.view?.rematch);
+    const mainLabel = matchOver
+      ? (this.online ? t('online.backToLobby') : t('summary.playAgain'))
+      : t('summary.nextRound');
+    const main = addTextButton(this, offerRematch ? 730 : 600, BUTTON_Y, offerRematch ? 230 : 260, 40, mainLabel, proceed,
+      { fontSize: 16, depth: 50 });
+    if (offerRematch) {
+      this.rematchButton = addTextButton(this, 470, BUTTON_Y, 230, 40, t('online.rematch'), () => {
+        this.online?.send({ type: 'rematch' });
+        this.rematchButton?.setEnabled(false);
+      }, { fontSize: 16, depth: 50, color: COLORS.gold });
+      this.rematchNote = this.add.text(NOTE_X, BUTTON_Y, '', {
+        fontSize: '15px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold', align: 'center',
+      }).setOrigin(0.5).setDepth(51);
+    }
+    if (this.online && !matchOver) {
+      this.readyNote = this.add.text(NOTE_X, BUTTON_Y, '', {
+        fontSize: '15px', fontFamily: 'Arial', color: COLORS.win, fontStyle: 'bold', align: 'center',
+      }).setOrigin(0.5).setDepth(51).setVisible(false);
+      this.setNote(this.readyNote, `✔ ${t('online.opponentReady')}`, COLORS.win);
+      this.readyNote.setVisible(false);
+    }
+    if (this.online) {
+      this.time.addEvent({ delay: 500, loop: true, callback: () => this.refreshOnlineNotes() });
+      this.refreshOnlineNotes();
+    }
     if (this.online && !matchOver) {
       const countdown = this.add.text(600, FOOTNOTE_Y, '', {
         fontSize: '12px', fontFamily: 'Arial', color: COLORS.muted,
