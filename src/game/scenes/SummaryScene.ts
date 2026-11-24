@@ -20,7 +20,7 @@ import type { MatchView } from '../online/protocol';
 import type { OnlineClient } from '../../net/onlineClient';
 import { leaveOnline } from '../../net/onlineClient';
 import { refreshAccount } from '../../net/identity';
-import { bindOnlineScene, mirrorMatchState, playerName, sideLabel } from './onlineScene';
+import { bindOnlineScene, mirrorMatchState, sideLabel } from './onlineScene';
 
 export class SummaryScene extends Phaser.Scene {
   constructor() {
@@ -95,13 +95,13 @@ export class SummaryScene extends Phaser.Scene {
     this.revealRows.length = 0;
     drawHeader(this, t('summary.title', { round: this.roundNumber }));
     this.add.text(1170, 35,
-      `P1 ${this.state.p1RoundWins}　－　${this.state.p2RoundWins} P2`, {
+      `${this.nameOf(Player.P1)} ${this.state.p1RoundWins}　－　${this.state.p2RoundWins} ${this.nameOf(Player.P2)}`, {
         fontSize: '16px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
       }).setOrigin(1, 0.5).setDepth(3);
-    this.add.text(150, 88, this.view ? `P1 · ${sideLabel(this.view, Player.P1)}` : `P1 · ${t('game.you')}`, {
+    this.add.text(150, 88, this.nameOf(Player.P1), {
       fontSize: '16px', fontFamily: 'Arial', color: COLORS.p1, fontStyle: 'bold',
     }).setOrigin(0.5);
-    this.add.text(1050, 88, this.view ? `P2 · ${sideLabel(this.view, Player.P2)}` : `P2 · ${t('game.cpu')}`, {
+    this.add.text(1050, 88, this.nameOf(Player.P2), {
       fontSize: '16px', fontFamily: 'Arial', color: COLORS.p2, fontStyle: 'bold',
     }).setOrigin(0.5);
 
@@ -126,33 +126,34 @@ export class SummaryScene extends Phaser.Scene {
       this.laneCards.set(this.cardKey(Player.P1, lane), p1Card);
       this.laneCards.set(this.cardKey(Player.P2, lane), p2Card);
 
-      row.add(this.add.text(194, y, laneResult.p1Card.name, {
+      row.add(this.add.text(194, y - 13, laneResult.p1Card.name, {
         fontSize: '13px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
         wordWrap: { width: 235 },
       }).setOrigin(0, 0.5));
-      row.add(this.add.text(1006, y, laneResult.p2Card.name, {
+      row.add(this.add.text(1006, y - 13, laneResult.p2Card.name, {
         fontSize: '13px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
         align: 'right', wordWrap: { width: 235 },
       }).setOrigin(1, 0.5));
 
       const p1Won = laneResult.laneWinner === Player.P1;
       const p2Won = laneResult.laneWinner === Player.P2;
-      row.add(this.add.text(515, y - 16, p1Won ? 'WIN' : '', {
+      // WIN and the score breakdown stay clear of the centre lane badge (x 560-640).
+      row.add(this.add.text(542, y - 13, p1Won ? 'WIN' : '', {
         fontSize: '15px', fontFamily: 'Arial', color: COLORS.win, fontStyle: 'bold',
-      }).setOrigin(0.5));
-      row.add(this.add.text(515, y + 11,
+      }).setOrigin(1, 0.5));
+      row.add(this.add.text(542, y + 14,
         this.laneBreakdown(laneResult, laneResult.p1WinRate, laneResult.p1Synergy.bonus), {
           fontSize: '13px', fontFamily: 'Arial', color: p1Won ? COLORS.win : COLORS.muted,
           fontStyle: p1Won ? 'bold' : 'normal',
-        }).setOrigin(0.5));
-      row.add(this.add.text(685, y - 16, p2Won ? 'WIN' : '', {
+        }).setOrigin(1, 0.5));
+      row.add(this.add.text(658, y - 13, p2Won ? 'WIN' : '', {
         fontSize: '15px', fontFamily: 'Arial', color: COLORS.win, fontStyle: 'bold',
-      }).setOrigin(0.5));
-      row.add(this.add.text(685, y + 11,
+      }).setOrigin(0, 0.5));
+      row.add(this.add.text(658, y + 14,
         this.laneBreakdown(laneResult, laneResult.p2WinRate, laneResult.p2Synergy.bonus), {
           fontSize: '13px', fontFamily: 'Arial', color: p2Won ? COLORS.win : COLORS.muted,
           fontStyle: p2Won ? 'bold' : 'normal',
-        }).setOrigin(0.5));
+        }).setOrigin(0, 0.5));
 
       row.add(this.add.rectangle(600, y, 80, 26, 0x091725, 0.96).setRounded(7)
         .setStrokeStyle(1, hexToInt(laneColor(lane)), 0.95));
@@ -248,10 +249,10 @@ export class SummaryScene extends Phaser.Scene {
     const p2Bonus = sumBonus(Player.P2);
     const p1Panel = addPanel(this, 310, 642, 520, 70, 0x0b2034).setDepth(35);
     const p2Panel = addPanel(this, 890, 642, 520, 70, 0x0b2034).setDepth(35);
-    const p1Text = this.add.text(310, 628, t('summary.synergyBonus', { player: 'P1', bonus: p1Bonus.toFixed(1) }), {
+    const p1Text = this.add.text(310, 628, t('summary.synergyBonus', { player: this.nameOf(Player.P1), bonus: p1Bonus.toFixed(1) }), {
       fontSize: '15px', fontFamily: 'Arial', color: COLORS.p1, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(36);
-    const p2Text = this.add.text(890, 628, t('summary.synergyBonus', { player: 'P2', bonus: p2Bonus.toFixed(1) }), {
+    const p2Text = this.add.text(890, 628, t('summary.synergyBonus', { player: this.nameOf(Player.P2), bonus: p2Bonus.toFixed(1) }), {
       fontSize: '15px', fontFamily: 'Arial', color: COLORS.p2, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(36);
     const p1Pairs = this.add.text(310, 653, p1ComboText, {
@@ -267,18 +268,20 @@ export class SummaryScene extends Phaser.Scene {
     [p1Text, p2Text, p1Pairs, p2Pairs].forEach(text => text.setAlpha(0));
     this.tweens.add({ targets: [p1Panel, p2Panel, p1Text, p2Text, p1Pairs, p2Pairs], alpha: 1, duration: 400 });
 
-    const p1Total = this.add.text(600, 700, '', {
+    const p1Total = this.add.text(600, 690, '', {
       fontSize: '19px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(40);
     countUp(this, p1Total, this.result.p1WinRate * 100,
       value => t('summary.roundTotal', {
         p1: value.toFixed(1),
         p2: (this.result.p2WinRate * 100).toFixed(1),
+        p1name: this.nameOf(Player.P1),
+        p2name: this.nameOf(Player.P2),
       }), 760);
     const winner = this.result.roundWinner;
     const winnerColor = winner === Player.P1 ? COLORS.p1 : winner === Player.P2 ? COLORS.p2 : COLORS.gold;
-    const winnerLabel = this.add.text(600, 735, winner
-      ? t('summary.roundWinner', { player: this.view ? playerName(this.view, winner) : this.localName(winner) })
+    const winnerLabel = this.add.text(600, 721, winner
+      ? t('summary.roundWinner', { player: this.nameOf(winner) })
       : t('summary.roundDraw'), {
       fontSize: '22px', fontFamily: 'Arial', color: winnerColor, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(40);
@@ -287,10 +290,12 @@ export class SummaryScene extends Phaser.Scene {
     const matchOver = isMatchOver(this.state);
     if (matchOver) {
       const matchWinnerText = this.state.matchWinner
-        ? t('summary.matchWinner', { player: this.view ? playerName(this.view, this.state.matchWinner) : this.localName(this.state.matchWinner) })
+        ? t('summary.matchWinner', { player: this.nameOf(this.state.matchWinner) })
         : t('summary.matchDraw');
-      this.add.text(600, 756,
+      this.add.text(600, 748,
         t('summary.matchOver', {
+          p1name: this.nameOf(Player.P1),
+          p2name: this.nameOf(Player.P2),
           p1: this.state.p1RoundWins,
           p2: this.state.p2RoundWins,
           winner: matchWinnerText,
@@ -355,6 +360,11 @@ export class SummaryScene extends Phaser.Scene {
 
   private cardKey(player: Player, lane: Lane): string {
     return `${player}:${lane}`;
+  }
+
+  /** 你 / 電腦 vs CPU; online: 你 for this player, the opponent's nickname for the other. */
+  private nameOf(player: Player): string {
+    return this.view ? sideLabel(this.view, player) : this.localName(player);
   }
 
   /** vs CPU: P1 is you, P2 is the computer. */

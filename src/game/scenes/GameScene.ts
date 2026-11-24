@@ -10,7 +10,6 @@ import {
   currentPlayLane,
   eligiblePartners,
   getFirstPlayer,
-  getScoreString,
   handToPlacements,
   isPlayerReady,
   isRoundPlayComplete,
@@ -30,7 +29,6 @@ import {
   submitMainPick,
   submitPartnerPick,
   summarizeRound,
-  usedSynergyPartners,
   cpuTakeTurn,
   cpuThinkDelay,
 } from '../rules';
@@ -46,14 +44,22 @@ import { TurnTimerView } from './turnTimer';
 import { playCoinFlip } from './coinFlip';
 import { addButton, addPanel, COLORS, drawBackground, glowText, hexToInt, laneColor } from './theme';
 
-const COLUMN_X = [190, 360, 530, 700, 870];
-const SLOT_W = 96;
-const SLOT_H = 126;
-const TOP_Y = 142;
-const BOTTOM_Y = 352;
-const TOP_SCORE_Y = 222;
-const BOTTOM_SCORE_Y = 272;
-const LANE_LABEL_Y = 247;
+/** One table position per side: the current lane's card, opponent above, you below. */
+const BOARD_X = 530;
+const SLOT_W = 128;
+const SLOT_H = 168;
+const TOP_Y = 150;
+const BOTTOM_Y = 372;
+/** Middle line between the two slots: lane name + order bonus, and the 5-dot lane record. */
+const MID_Y = 261;
+const SCORE_X = BOARD_X + SLOT_W / 2 + 78;
+const DOCK_X = BOARD_X - SLOT_W / 2 - 66;
+const NAME_X = 230;
+const STRIP_X = 740;
+const STRIP_GAP = 30;
+const LANE_KEYS = {
+  [Lane.Top]: 'lane.top', [Lane.Jungle]: 'lane.jungle', [Lane.Mid]: 'lane.mid', [Lane.Bot]: 'lane.bot', [Lane.Support]: 'lane.support',
+} as const;
 /** Held hand: cards fanned along an arc at the bottom of the screen, tilted like cards in a hand. */
 const HAND_CENTER_X = 530;
 const HAND_Y = 648;
@@ -102,6 +108,8 @@ interface HandCardView {
   info: Phaser.GameObjects.Text;
   red: boolean;
   current: boolean;
+  /** Already played as a main card this round (stays in hand, dimmed, still usable as a partner). */
+  played: boolean;
 }
 
 /**
@@ -120,8 +128,13 @@ export class GameScene extends Phaser.Scene {
   private bottomPlayer: Player = Player.P1;
   private lead: Player = Player.P1;
   private slots = new Map<string, SlotView>();
-  private scoreTexts = new Map<string, Phaser.GameObjects.Text>();
-  private laneHighlights = new Map<Lane, Phaser.GameObjects.Rectangle>();
+  private scoreTexts = new Map<Row, Phaser.GameObjects.Text>();
+  private laneTitle!: Phaser.GameObjects.Text;
+  private laneTitleBox!: Phaser.GameObjects.Rectangle;
+  private stripDots: Phaser.GameObjects.Arc[] = [];
+  private stripText!: Phaser.GameObjects.Text;
+  /** Objects shown for the lane being resolved (WIN tags, docked partners); swept away afterwards. */
+  private laneFx: Phaser.GameObjects.GameObject[] = [];
   private handObjects: Phaser.GameObjects.GameObject[] = [];
   private handCards: HandCardView[] = [];
   private glowObjects: Phaser.GameObjects.GameObject[] = [];
@@ -147,8 +160,6 @@ export class GameScene extends Phaser.Scene {
   private shownResults = 0;
   private handMode: HandMode = 'hidden';
   private handOwner: Player = Player.P1;
-  /** Board slots (row:lane) whose main card was already used as a synergy partner this round. */
-  private usedPartnerSlots = new Set<string>();
 
   // vs CPU
   private state!: MatchState;
@@ -174,7 +185,8 @@ export class GameScene extends Phaser.Scene {
   init(data: { online?: boolean; showCoin?: boolean; matchState?: MatchState; round?: number }) {
     this.slots = new Map();
     this.scoreTexts = new Map();
-    this.laneHighlights = new Map();
+    this.stripDots = [];
+    this.laneFx = [];
     this.handObjects = [];
     this.handCards = [];
     this.glowObjects = [];
@@ -189,7 +201,6 @@ export class GameScene extends Phaser.Scene {
     this.confirmText = null;
     this.shownResults = 0;
     this.handMode = 'hidden';
-    this.usedPartnerSlots = new Set();
     this.play = null;
     this.picker = null;
     this.cpuLanding = false;
@@ -280,16 +291,16 @@ export class GameScene extends Phaser.Scene {
     return player === this.bottomPlayer ? 'bottom' : 'top';
   }
 
-  private key(row: Row, lane: Lane): string {
-    return `${row}:${lane}`;
-  }
-
   private rowY(row: Row): number {
     return row === 'top' ? TOP_Y : BOTTOM_Y;
   }
 
-  private columnX(lane: Lane): number {
-    return COLUMN_X[LANE_ORDER.indexOf(lane)];
+  private laneName(lane: Lane): string {
+    return t(LANE_KEYS[lane]);
+  }
+
+  private scoreLine(): string {
+    return `${this.label(Player.P1)} ${this.state.p1RoundWins} - ${this.state.p2RoundWins} ${this.label(Player.P2)}`;
   }
 
   private playerColor(player: Player): string {
@@ -348,50 +359,55 @@ export class GameScene extends Phaser.Scene {
     this.add.text(28, 48, t('game.lead', { player: this.label(this.lead) }), {
       fontSize: '13px', fontFamily: 'Arial', color: COLORS.muted,
     }).setOrigin(0, 0.5).setDepth(10);
-    this.scoreText = this.add.text(1172, 24, getScoreString(this.state), {
+    this.scoreText = this.add.text(1172, 24, this.scoreLine(), {
       fontSize: '16px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
     }).setOrigin(1, 0.5).setDepth(10);
     this.progressText = this.add.text(1172, 49, t('game.progress', { played: 0 }), {
       fontSize: '13px', fontFamily: 'Arial', color: COLORS.gold,
     }).setOrigin(1, 0.5).setDepth(10);
 
+    // One table: a single slot per side for the current lane.
+    addPanel(this, BOARD_X + 20, MID_Y, 700, BOTTOM_Y - TOP_Y + SLOT_H + 30, 0x0b1c2e).setDepth(1).setAlpha(0.7);
     const topPlayer = otherPlayer(this.bottomPlayer);
-    this.add.text(70, TOP_Y, this.label(topPlayer), {
-      fontSize: '15px', fontFamily: 'Arial', color: this.playerColor(topPlayer), fontStyle: 'bold', align: 'center',
-      wordWrap: { width: 110 },
+    this.add.text(NAME_X, TOP_Y, this.label(topPlayer), {
+      fontSize: '18px', fontFamily: 'Arial', color: this.playerColor(topPlayer), fontStyle: 'bold', align: 'center',
+      wordWrap: { width: 130 },
     }).setOrigin(0.5).setDepth(6);
-    this.add.text(70, BOTTOM_Y, this.label(this.bottomPlayer), {
-      fontSize: '15px', fontFamily: 'Arial', color: this.playerColor(this.bottomPlayer), fontStyle: 'bold', align: 'center',
-      wordWrap: { width: 110 },
+    this.add.text(NAME_X, BOTTOM_Y, this.label(this.bottomPlayer), {
+      fontSize: '18px', fontFamily: 'Arial', color: this.playerColor(this.bottomPlayer), fontStyle: 'bold', align: 'center',
+      wordWrap: { width: 130 },
     }).setOrigin(0.5).setDepth(6);
-
-    const panelY = (TOP_Y + BOTTOM_Y) / 2;
-    const panelH = BOTTOM_Y - TOP_Y + SLOT_H + 24;
+    this.laneTitleBox = this.add.rectangle(BOARD_X, MID_Y, 230, 32, 0x091725, 0.95).setRounded(8)
+      .setStrokeStyle(2, hexToInt(COLORS.gold), 0.9).setDepth(5);
+    this.laneTitle = this.add.text(BOARD_X, MID_Y, '', {
+      fontSize: '16px', fontFamily: 'Arial', color: COLORS.gold, fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(6);
     LANE_ORDER.forEach((lane, index) => {
-      const x = COLUMN_X[index];
-      const highlight = this.add.rectangle(x, panelY, 154, panelH + 4, hexToInt(COLORS.gold), 0)
-        .setRounded(10).setStrokeStyle(2, hexToInt(COLORS.gold), 0).setDepth(1);
-      this.laneHighlights.set(lane, highlight);
-      addPanel(this, x, panelY, 150, panelH, 0x0b1c2e).setDepth(1).setAlpha(0.7);
-      this.add.rectangle(x, LANE_LABEL_Y, 128, 24, 0x091725, 0.92).setRounded(7)
-        .setStrokeStyle(1, hexToInt(laneColor(lane)), 0.9).setDepth(5);
-      this.add.text(x, LANE_LABEL_Y, `${lane} · +${ORDER_BONUS[index]}%`, {
-        fontSize: '12px', fontFamily: 'Arial', color: laneColor(lane), fontStyle: 'bold',
-      }).setOrigin(0.5).setDepth(6);
-      for (const row of ['top', 'bottom'] as Row[]) {
-        this.setEmptySlot(row, lane);
-        const score = this.add.text(x, row === 'top' ? TOP_SCORE_Y : BOTTOM_SCORE_Y, '', {
-          fontSize: '15px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
-        }).setOrigin(0.5).setDepth(30);
-        this.scoreTexts.set(this.key(row, lane), score);
-      }
+      const dot = this.add.circle(STRIP_X + index * STRIP_GAP, MID_Y, 10, 0x0a1828, 1)
+        .setStrokeStyle(2, hexToInt(laneColor(lane)), 0.6).setDepth(6);
+      this.add.text(STRIP_X + index * STRIP_GAP, MID_Y, `${index + 1}`, {
+        fontSize: '11px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(7);
+      this.stripDots.push(dot);
     });
+    this.stripText = this.add.text(STRIP_X + 2 * STRIP_GAP, MID_Y + 22, '', {
+      fontSize: '12px', fontFamily: 'Arial', color: COLORS.muted, fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(6);
+    for (const row of ['top', 'bottom'] as Row[]) {
+      this.setEmptySlot(row);
+      const score = this.add.text(SCORE_X, this.rowY(row), '', {
+        fontSize: '24px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(30);
+      glowText(score);
+      this.scoreTexts.set(row, score);
+    }
+    this.highlightLane(null);
 
-    this.promptText = this.add.text(530, 446, '', {
+    this.promptText = this.add.text(530, 487, '', {
       fontSize: '19px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(20);
     glowText(this.promptText);
-    this.bonusText = this.add.text(530, 469, '', {
+    this.bonusText = this.add.text(530, 504, '', {
       fontSize: '12px', fontFamily: 'Arial', color: COLORS.muted, align: 'center', wordWrap: { width: 760 },
     }).setOrigin(0.5, 0).setDepth(20);
     this.handTitle = this.add.text(28, 540, '', {
@@ -405,67 +421,86 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5).setDepth(60);
   }
 
-  private clearSlot(row: Row, lane: Lane) {
-    const existing = this.slots.get(this.key(row, lane));
+  private clearSlot(row: Row) {
+    const existing = this.slots.get(row);
     existing?.container.destroy();
-    this.slots.delete(this.key(row, lane));
+    this.slots.delete(row);
   }
 
-  private setEmptySlot(row: Row, lane: Lane) {
-    this.clearSlot(row, lane);
-    const container = this.add.container(this.columnX(lane), this.rowY(row)).setDepth(8);
-    container.add(this.add.rectangle(0, 0, SLOT_W, SLOT_H, 0x0a1828, 0.8).setRounded(8)
-      .setStrokeStyle(1, hexToInt(laneColor(lane)), 0.35));
+  private setEmptySlot(row: Row) {
+    this.clearSlot(row);
+    const container = this.add.container(BOARD_X, this.rowY(row)).setDepth(8);
+    container.add(this.add.rectangle(0, 0, SLOT_W, SLOT_H, 0x0a1828, 0.8).setRounded(10)
+      .setStrokeStyle(2, hexToInt(COLORS.cyan), 0.3));
     container.add(this.add.text(0, 0, t('game.pending'), {
-      fontSize: '11px', fontFamily: 'Arial', color: COLORS.muted,
+      fontSize: '14px', fontFamily: 'Arial', color: COLORS.muted,
     }).setOrigin(0.5));
-    this.slots.set(this.key(row, lane), { container, border: null, kind: 'empty', cardId: null });
+    this.slots.set(row, { container, border: null, kind: 'empty', cardId: null });
   }
 
   private setBackSlot(row: Row, lane: Lane) {
-    if (this.slots.get(this.key(row, lane))?.kind === 'back') return;
-    this.clearSlot(row, lane);
+    // Never cover a card that has already flipped (a late hand-to-table flight landing after the reveal).
+    const kind = this.slots.get(row)?.kind;
+    if (kind === 'back' || kind === 'face') return;
+    this.clearSlot(row);
     const back = createCardBack(this, lane, SLOT_W, SLOT_H);
-    back.container.setPosition(this.columnX(lane), this.rowY(row)).setDepth(8).setScale(0.6);
+    back.container.setPosition(BOARD_X, this.rowY(row)).setDepth(8).setScale(0.6);
     this.tweens.add({ targets: back.container, scale: 1, duration: 220, ease: 'Back.Out' });
-    this.slots.set(this.key(row, lane), { container: back.container, border: back.border, kind: 'back', cardId: null });
+    this.slots.set(row, { container: back.container, border: back.border, kind: 'back', cardId: null });
   }
 
   private setFaceSlot(row: Row, lane: Lane, card: Card): CardView {
-    this.clearSlot(row, lane);
-    const face = createCardFace(this, card, lane, SLOT_W, SLOT_H, { nameFontSize: '10px' });
-    face.container.setPosition(this.columnX(lane), this.rowY(row)).setDepth(9);
-    this.slots.set(this.key(row, lane), { container: face.container, border: face.border, kind: 'face', cardId: card.id });
+    this.clearSlot(row);
+    const face = createCardFace(this, card, lane, SLOT_W, SLOT_H, { nameFontSize: '13px' });
+    face.container.setPosition(BOARD_X, this.rowY(row)).setDepth(9);
+    this.slots.set(row, { container: face.container, border: face.border, kind: 'face', cardId: card.id });
     return face;
   }
 
+  /** Lane title on the table ("上路 1/5 · +5%") for the current lane, or blank between rounds. */
   private highlightLane(lane: Lane | null) {
-    for (const [itemLane, rect] of this.laneHighlights) {
-      const on = itemLane === lane;
-      rect.setFillStyle(hexToInt(COLORS.gold), on ? 0.06 : 0).setStrokeStyle(2, hexToInt(COLORS.gold), on ? 0.8 : 0);
+    const index = lane ? LANE_ORDER.indexOf(lane) : -1;
+    if (!lane || index < 0) {
+      this.laneTitle.setText('');
+      this.laneTitleBox.setVisible(false);
+    } else {
+      this.laneTitle.setText(t('game.laneTitle', { lane: this.laneName(lane), number: index + 1, bonus: ORDER_BONUS[index] }))
+        .setColor(laneColor(lane));
+      this.laneTitleBox.setVisible(true).setStrokeStyle(2, hexToInt(laneColor(lane)), 0.9);
     }
+    this.updateStrip(index);
+  }
+
+  /** 5-dot lane record: green = you won, red = lost, gold = draw, ringed = current lane. */
+  private updateStrip(current = this.laneIndexNow()) {
+    const results = (this.play ? this.play.results : this.view?.battle?.revealed ?? []).slice(0, this.shownResults);
+    let mine = 0;
+    let theirs = 0;
+    this.stripDots.forEach((dot, index) => {
+      const lane = LANE_ORDER[index];
+      const result = results[index];
+      if (result) {
+        const won = result.laneWinner === this.bottomPlayer;
+        const draw = result.laneWinner === null;
+        if (won) mine += 1;
+        else if (!draw) theirs += 1;
+        dot.setFillStyle(hexToInt(draw ? COLORS.gold : won ? COLORS.win : COLORS.lose), 0.9)
+          .setStrokeStyle(2, 0xffffff, 0.5).setScale(1);
+      } else if (index === current) {
+        dot.setFillStyle(0x0a1828, 1).setStrokeStyle(3, hexToInt(COLORS.gold), 1).setScale(1.2);
+      } else {
+        dot.setFillStyle(0x0a1828, 1).setStrokeStyle(2, hexToInt(laneColor(lane)), 0.6).setScale(1);
+      }
+    });
+    this.stripText.setText(results.length > 0
+      ? t('game.laneRecord', { you: this.label(this.bottomPlayer), mine, theirs, them: this.label(otherPlayer(this.bottomPlayer)) })
+      : '');
   }
 
   private updateHeader() {
-    this.scoreText.setText(getScoreString(this.state));
+    this.scoreText.setText(this.scoreLine());
     this.progressText.setText(t('game.progress', { played: this.shownResults }));
-  }
-
-  /** Mark a board main card that just served as a partner: red edge + red tint + small tag. */
-  private markUsedPartner(row: Row, lane: Lane) {
-    const key = this.key(row, lane);
-    const slot = this.slots.get(key);
-    if (!slot || slot.kind !== 'face' || this.usedPartnerSlots.has(key)) return;
-    this.usedPartnerSlots.add(key);
-    slot.container.add(this.add.rectangle(0, 0, SLOT_W, SLOT_H, hexToInt(USED_PARTNER_RED), 0.2).setRounded(7));
-    slot.container.add(this.add.text(0, -SLOT_H / 2 + 30, t('game.partnerUsed'), {
-      fontSize: '10px', fontFamily: 'Arial', color: '#ffffff', fontStyle: 'bold',
-      backgroundColor: USED_PARTNER_RED, padding: { x: 4, y: 1 },
-    }).setOrigin(0.5));
-    if (slot.border) {
-      slot.container.bringToTop(slot.border);
-      slot.border.setStrokeStyle(3, hexToInt(USED_PARTNER_RED), 1);
-    }
+    this.updateStrip();
   }
 
   // ---------- hand ----------
@@ -487,7 +522,6 @@ export class GameScene extends Phaser.Scene {
       this.restoreHandBorder(view);
       this.setInfo(view, null);
     }
-    this.restoreBoardBorders();
   }
 
   private restoreHandBorder(view: HandCardView) {
@@ -516,6 +550,9 @@ export class GameScene extends Phaser.Scene {
       lines.push(t('game.partnerUsed'));
       color = '#ffffff';
       background = USED_PARTNER_RED;
+    } else if (view.played) {
+      lines.push(t('game.playedTag'));
+      color = '#9fb3c8';
     } else if (view.laneIndex < this.laneIndexNow()) {
       lines.push(t('game.notPlayed'));
       color = '#d8e2ec';
@@ -553,26 +590,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  /** Played main cards of `player` sit on the board: return their slot when they are partner candidates. */
-  private boardSlotOf(player: Player, cardId: string): { slot: SlotView; lane: Lane } | null {
-    const row = this.rowOf(player);
-    for (const lane of LANE_ORDER) {
-      const slot = this.slots.get(this.key(row, lane));
-      if (slot?.kind === 'face' && slot.cardId === cardId) return { slot, lane };
-    }
-    return null;
-  }
-
-  private restoreBoardBorders() {
-    for (const [key, slot] of this.slots) {
-      if (slot.kind !== 'face' || !slot.border?.active) continue;
-      const lane = key.split(':')[1] as Lane;
-      if (this.usedPartnerSlots.has(key)) slot.border.setStrokeStyle(3, hexToInt(USED_PARTNER_RED), 1);
-      else slot.border.setStrokeStyle(2, hexToInt(laneColor(lane)), 0.95);
-    }
-  }
-
-  /** Light up partner cards (held or already on the board): gold edge, pulsing glow and their tier %. */
+  /** Light up partner cards in the hand (played ones included): gold edge, pulsing glow and their tier %. */
   private showGlow(links: LaneSynergyLink[]) {
     this.clearGlow();
     for (const link of links) {
@@ -585,21 +603,7 @@ export class GameScene extends Phaser.Scene {
         view.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
         this.setInfo(view, link.bonus);
         this.glowObjects.push(glow);
-        continue;
       }
-      const onBoard = this.boardSlotOf(this.handOwner, link.card.id);
-      if (!onBoard) continue;
-      const x = this.columnX(onBoard.lane);
-      const y = this.rowY(this.rowOf(this.handOwner));
-      const glow = this.add.rectangle(x, y, SLOT_W + 14, SLOT_H + 14, hexToInt(COLORS.gold), 0.14)
-        .setRounded(10).setStrokeStyle(5, hexToInt(COLORS.gold), 0.95).setDepth(7);
-      this.tweens.add({ targets: glow, alpha: { from: 0.5, to: 1 }, duration: 650, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
-      onBoard.slot.border?.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
-      const badge = this.add.text(x, y - SLOT_H / 2 - 10, t('game.synergyBadge', { bonus: this.pct(link.bonus) }), {
-        fontSize: '12px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
-        backgroundColor: COLORS.gold, padding: { x: 5, y: 1 },
-      }).setOrigin(0.5).setDepth(31);
-      this.glowObjects.push(glow, badge);
     }
   }
 
@@ -625,8 +629,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Draw `player`'s held hand fanned at the bottom: the cards they still hold (played main cards
-   * leave the hand for the table). The current lane's two cards stand raised; `mode` decides
+   * Draw `player`'s hand fanned at the bottom. Cards already played as main this round stay in
+   * the hand, dimmed with a small "played" tag (they can still be partners). The current lane's two cards stand raised; `mode` decides
    * what is clickable. Each card has a floating info label above it.
    */
   private renderHand(player: Player, mode: HandMode) {
@@ -643,7 +647,7 @@ export class GameScene extends Phaser.Scene {
     const held: { id: string | null; laneIndex: number }[] = [];
     LANE_ORDER.forEach((_, index) => {
       const ids = hand[index] ?? [];
-      for (const id of ids) if (!played.has(id) && id !== main && id !== this.pendingMain) held.push({ id: mode === 'hidden' ? null : id, laneIndex: index });
+      for (const id of ids) if (id !== main && id !== this.pendingMain) held.push({ id: mode === 'hidden' ? null : id, laneIndex: index });
     });
     if (mode === 'hidden' && held.length === 0) for (let i = 0; i < 10 - played.size; i++) held.push({ id: null, laneIndex: 0 });
 
@@ -662,6 +666,11 @@ export class GameScene extends Phaser.Scene {
       const lift = current && mode === 'main' ? CURRENT_LIFT : 0;
       face.container.setPosition(pos.x, pos.y - lift).setRotation(pos.rotation).setDepth(20 + index);
       const isRed = red.has(item.id);
+      const isPlayed = played.has(item.id);
+      if (isPlayed) {
+        face.container.add(this.add.rectangle(0, 0, HAND_W, HAND_H, 0x05101c, 0.5).setRounded(7));
+        face.container.bringToTop(face.border);
+      }
       if (isRed) {
         face.container.add(this.add.rectangle(0, 0, HAND_W, HAND_H, hexToInt(USED_PARTNER_RED), 0.26).setRounded(7));
         face.container.bringToTop(face.border);
@@ -672,7 +681,7 @@ export class GameScene extends Phaser.Scene {
       face.container.add(info);
       const view: HandCardView = {
         id: item.id, laneIndex: item.laneIndex, x: pos.x, baseY: pos.y, baseRotation: pos.rotation, depth: 20 + index,
-        container: face.container, border: face.border, info, red: isRed, current,
+        container: face.container, border: face.border, info, red: isRed, current, played: isPlayed,
       };
       this.restoreHandBorder(view);
       this.setInfo(view, null);
@@ -738,21 +747,12 @@ export class GameScene extends Phaser.Scene {
     this.showConfirm(t('game.confirmPlay'));
   }
 
-  /** Partner step: only the glowing (eligible) cards — held or on the board — are clickable; exactly one counts. */
+  /** Partner step: only the glowing (eligible) hand cards are clickable; exactly one counts. */
   private bindPartnerChoices(player: Player) {
     const main = this.mainOf(player);
     if (!main) return;
     this.partnerLinks = this.optionsFor(player, main);
     this.showGlow(this.partnerLinks);
-    for (const link of this.partnerLinks) {
-      if (this.handCards.some(item => item.id === link.card.id)) continue;
-      const onBoard = this.boardSlotOf(player, link.card.id);
-      if (!onBoard) continue;
-      const hit = this.add.rectangle(this.columnX(onBoard.lane), this.rowY(this.rowOf(player)), SLOT_W + 8, SLOT_H + 8, 0xffffff, 0)
-        .setDepth(45).setInteractive({ useHandCursor: true });
-      hit.on('pointerdown', () => this.onPartnerClick(link.card.id, link));
-      this.handObjects.push(hit);
-    }
     this.choiceText.setText(t('game.choicePartnerStep', { card: cardById(main)?.name ?? main, count: this.partnerLinks.length }));
   }
 
@@ -774,7 +774,7 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * Play a held card onto the table: it leaves the hand, flies (straightening and shrinking)
-   * to its lane slot and turns face-down there. Calls `onLanded` when it has settled.
+   * to the table slot and turns face-down there. Calls `onLanded` when it has settled.
    */
   private playFromHand(player: Player, cardId: string, onLanded: () => void) {
     const view = this.handCards.find(item => item.id === cardId);
@@ -793,7 +793,7 @@ export class GameScene extends Phaser.Scene {
     this.flying += 1;
     this.tweens.add({
       targets: flying.container,
-      x: this.columnX(lane),
+      x: BOARD_X,
       y: this.rowY(row),
       rotation: 0,
       scale: SLOT_W / HAND_W,
@@ -813,10 +813,10 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  /** The opponent's face-down card slides from their held cards at the top edge to their lane slot. */
+  /** The opponent's face-down card slides from their held cards at the top edge to their table slot. */
   private opponentPlays(lane: Lane, onLanded?: () => void) {
     const row: Row = 'top';
-    if (this.slots.get(this.key(row, lane))?.kind === 'back') {
+    if (this.slots.get(row)?.kind === 'back') {
       onLanded?.();
       return;
     }
@@ -829,7 +829,7 @@ export class GameScene extends Phaser.Scene {
     if (from) this.oppHandObjects = this.oppHandObjects.filter(item => item !== from);
     this.tweens.add({
       targets: back.container,
-      x: this.columnX(lane),
+      x: BOARD_X,
       y: this.rowY(row),
       scale: SLOT_W / OPP_HAND_W,
       duration: 480,
@@ -881,7 +881,7 @@ export class GameScene extends Phaser.Scene {
       this.promptText.setText(t('game.partnerPrompt', { player: this.label(player), card: cardById(main ?? '')?.name ?? '' }));
       this.bonusText.setText(t('game.partnerHint'));
     } else {
-      this.promptText.setText(t('game.pickPrompt', { player: this.label(player), lane }));
+      this.promptText.setText(t('game.pickPrompt', { player: this.label(player), lane: this.laneName(lane) }));
       this.bonusText.setText(`${t('game.orderBonus', { bonus: ORDER_BONUS[laneIndex] })}　·　${t('game.pickHint')}`);
     }
   }
@@ -1027,7 +1027,8 @@ export class GameScene extends Phaser.Scene {
   private refreshOnline() {
     const view = this.view;
     const battle = view?.battle;
-    if (!view || !battle || this.busy || this.leavingOnline) return;
+    // Wait for our own card to land before flipping the lane (playFromHand calls back here).
+    if (!view || !battle || this.busy || this.flying > 0 || this.leavingOnline) return;
     if (this.shownResults < battle.revealed.length) {
       const result = battle.revealed[this.shownResults];
       this.renderedKey = '';
@@ -1083,6 +1084,8 @@ export class GameScene extends Phaser.Scene {
       this.clearGlow();
       this.pendingMain = cardId;
       this.playFromHand(this.view.you, cardId, () => this.refreshOnline());
+      // Close the gap the played card left in the fan (the copy keeps flying to the table).
+      this.renderHand(this.view.you, 'view');
     }
     this.pendingUntil = Date.now() + 3000;
     this.pendingKey = `${this.view.battle.laneIndex}:${stage}`;
@@ -1135,8 +1138,8 @@ export class GameScene extends Phaser.Scene {
     this.turnTimer.hide();
     this.highlightLane(result.lane);
     const lane = result.lane;
-    const x = this.columnX(lane);
-    this.promptText.setText(t('game.dueling', { lane }));
+    const x = BOARD_X;
+    this.promptText.setText(t('game.dueling', { lane: this.laneName(lane) }));
     this.bonusText.setText('');
     this.choiceText.setText('');
 
@@ -1144,6 +1147,8 @@ export class GameScene extends Phaser.Scene {
       { player: Player.P1, row: this.rowOf(Player.P1), card: result.p1Card, winRate: result.p1WinRate, link: result.p1Synergy.links[0] ?? null, total: result.p1Total },
       { player: Player.P2, row: this.rowOf(Player.P2), card: result.p2Card, winRate: result.p2WinRate, link: result.p2Synergy.links[0] ?? null, total: result.p2Total },
     ];
+    // Reconnects can skip the face-down step: make sure the opponent's card isn't still flying in.
+    if (this.slots.get('top')?.kind === 'empty') this.setBackSlot('top', lane);
 
     // 1) Both main cards were face-down; they flip together.
     const faces = new Map<Row, CardView>();
@@ -1155,8 +1160,8 @@ export class GameScene extends Phaser.Scene {
       const flash = this.add.rectangle(x, this.rowY(side.row), SLOT_W + 8, SLOT_H + 8, 0xffffff, 0.6)
         .setBlendMode(Phaser.BlendModes.ADD).setDepth(40);
       this.tweens.add({ targets: flash, alpha: 0, duration: 280, onComplete: () => flash.destroy() });
-      const score = this.scoreTexts.get(this.key(side.row, lane))!;
-      score.setText(`${((side.winRate + result.orderBonus) * 100).toFixed(1)}%`).setColor(COLORS.text);
+      const score = this.scoreTexts.get(side.row)!;
+      score.setAlpha(1).setText(`${((side.winRate + result.orderBonus) * 100).toFixed(1)}%`).setColor(COLORS.text);
     }
 
     // 2) Each side's chosen partner pops out and flies in beside its main card with its tier %.
@@ -1165,26 +1170,27 @@ export class GameScene extends Phaser.Scene {
       if (!side.link) continue;
       const link = side.link;
       const totalAfter = side.winRate + result.orderBonus + link.bonus;
-      this.time.delayedCall(FLIP_MS, () => this.popPartner(side.row, lane, link, totalAfter, faces.get(side.row)!));
+      this.time.delayedCall(FLIP_MS, () => this.popPartner(side.row, link, totalAfter, faces.get(side.row)!));
     }
 
     // 3) Lane winner.
     const winnerAt = FLIP_MS + (anyPartner ? PARTNER_MS : 150);
     this.time.delayedCall(winnerAt, () => {
       for (const side of sides) {
-        const score = this.scoreTexts.get(this.key(side.row, lane))!;
+        const score = this.scoreTexts.get(side.row)!;
         const won = result.laneWinner === side.player;
         const lost = result.laneWinner !== null && !won;
         score.setText(`${(side.total * 100).toFixed(1)}%`)
           .setColor(won ? COLORS.win : lost ? COLORS.lose : COLORS.gold);
         const face = faces.get(side.row)!;
         if (won) {
-          face.border.setStrokeStyle(4, hexToInt(COLORS.win), 1);
-          const tag = this.add.text(x + SLOT_W / 2 - 4, this.rowY(side.row) - SLOT_H / 2 + 4, 'WIN', {
-            fontSize: '14px', fontFamily: 'Arial', color: '#06210f', fontStyle: 'bold',
-            backgroundColor: COLORS.win, padding: { x: 6, y: 2 },
+          face.border.setStrokeStyle(5, hexToInt(COLORS.win), 1);
+          const tag = this.add.text(x + SLOT_W / 2 - 6, this.rowY(side.row) - SLOT_H / 2 + 6, 'WIN', {
+            fontSize: '18px', fontFamily: 'Arial', color: '#06210f', fontStyle: 'bold',
+            backgroundColor: COLORS.win, padding: { x: 7, y: 2 },
           }).setOrigin(0.5).setDepth(35).setScale(0);
           this.tweens.add({ targets: tag, scale: 1, duration: 260, ease: 'Back.Out' });
+          this.laneFx.push(tag);
         } else if (lost) {
           face.container.setAlpha(0.72);
         }
@@ -1193,88 +1199,102 @@ export class GameScene extends Phaser.Scene {
       this.updateHeader();
       const winner = result.laneWinner;
       this.promptText.setText(winner
-        ? t('game.laneWinner', { lane, player: this.label(winner) })
-        : t('game.laneDraw', { lane }));
-      this.time.delayedCall(1000, () => {
-        this.refreshBoardRed();
+        ? t('game.laneWinner', { lane: this.laneName(lane), player: this.label(winner) })
+        : t('game.laneDraw', { lane: this.laneName(lane) }));
+      // 4) Hold the result, then sweep the table clear for the next lane.
+      this.time.delayedCall(1300, () => this.sweepTable(() => {
         this.busy = false;
         onDone();
-      });
+      }));
     });
   }
 
-  /** Red edge on every board main card that has already served as a partner this round (either side). */
-  private refreshBoardRed() {
-    const results = this.play ? this.play.results : this.view?.battle?.revealed ?? [];
-    for (const player of [Player.P1, Player.P2]) {
-      const red = usedSynergyPartners(results, player);
-      const row = this.rowOf(player);
-      for (const lane of LANE_ORDER) {
-        const slot = this.slots.get(this.key(row, lane));
-        if (slot?.cardId && red.has(slot.cardId)) this.markUsedPartner(row, lane);
-      }
+  /** Fade and slide the resolved lane's cards off the table, then put the empty slots back. */
+  private sweepTable(onDone: () => void) {
+    const targets: Phaser.GameObjects.GameObject[] = [...this.laneFx];
+    for (const row of ['top', 'bottom'] as Row[]) {
+      const slot = this.slots.get(row);
+      if (slot) targets.push(slot.container);
+      targets.push(this.scoreTexts.get(row)!);
     }
+    for (const target of targets) this.tweens.killTweensOf(target);
+    this.tweens.add({
+      targets,
+      alpha: 0,
+      x: `+=${90}`,
+      duration: 360,
+      ease: 'Sine.In',
+      onComplete: () => {
+        this.laneFx.forEach(object => object.destroy());
+        this.laneFx = [];
+        for (const row of ['top', 'bottom'] as Row[]) {
+          this.setEmptySlot(row);
+          this.scoreTexts.get(row)!.setText('').setAlpha(1).setX(SCORE_X).setScale(1);
+        }
+        onDone();
+      },
+    });
   }
 
-  /** Where a partner card flies in from: its hand card if visible, its board slot if it was played, else off-board. */
+  /** Where a partner card flies in from: its card in your hand, otherwise the opponent's hand at the top edge. */
   private partnerOrigin(row: Row, link: LaneSynergyLink): { x: number; y: number } {
     if (row === 'bottom' && this.handMode !== 'hidden') {
       const view = this.handCards.find(item => item.id === link.card.id);
       if (view) return { x: view.container.x, y: view.container.y };
     }
-    const slot = this.slots.get(this.key(row, link.lane));
-    if (slot?.cardId === link.card.id) return { x: this.columnX(link.lane), y: this.rowY(row) };
-    return { x: this.columnX(link.lane), y: row === 'top' ? -SLOT_H : HAND_Y };
+    return { x: BOARD_X, y: row === 'top' ? -SLOT_H / 2 : HAND_Y };
   }
 
-  private popPartner(row: Row, lane: Lane, link: LaneSynergyLink, totalAfter: number, target: CardView) {
+  private popPartner(row: Row, link: LaneSynergyLink, totalAfter: number, target: CardView) {
+    if (!this.scene.isActive()) return;
     const from = this.partnerOrigin(row, link);
-    const toX = this.columnX(lane);
+    const toX = BOARD_X;
     const toY = this.rowY(row);
     const bonusLabel = `+${this.pct(link.bonus)}%`;
-    const boardSlot = this.slots.get(this.key(row, link.lane));
-    const partnerOnBoard = boardSlot?.cardId === link.card.id ? boardSlot : null;
-    if (partnerOnBoard) {
-      this.tweens.add({ targets: partnerOnBoard.container, scale: 1.12, duration: 180, yoyo: true, ease: 'Sine.Out' });
-      partnerOnBoard.border?.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
-    }
     const handCard = row === 'bottom' ? this.handCards.find(item => item.id === link.card.id) : undefined;
     if (handCard) this.tweens.add({ targets: handCard.container, scale: 1.12, duration: 180, yoyo: true });
 
     // A copy of the partner pops out and docks beside the main card with its tier %.
-    const copy = createCardFace(this, link.card, link.lane, SLOT_W, SLOT_H, { nameFontSize: '10px' });
+    const copy = createCardFace(this, link.card, link.lane, SLOT_W, SLOT_H, { nameFontSize: '13px' });
     copy.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
-    copy.container.setPosition(from.x, from.y).setDepth(50).setScale(0.6);
+    copy.container.setPosition(from.x, from.y).setDepth(50).setScale(0.5);
     copy.container.addAt(this.add.rectangle(0, 0, SLOT_W + 14, SLOT_H + 14, hexToInt(COLORS.gold), 0.18)
       .setRounded(10).setStrokeStyle(5, hexToInt(COLORS.gold), 0.9), 0);
-    copy.container.add(this.add.text(0, -SLOT_H / 2 - 12, bonusLabel, {
-      fontSize: '22px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
+    copy.container.add(this.add.text(0, -SLOT_H / 2 - 14, bonusLabel, {
+      fontSize: '24px', fontFamily: 'Arial', color: '#1a1200', fontStyle: 'bold',
       backgroundColor: COLORS.gold, padding: { x: 8, y: 2 },
     }).setOrigin(0.5));
-    const dockX = toX + (lane === LANE_ORDER[LANE_ORDER.length - 1] ? -1 : 1) * (SLOT_W * 0.5 + 34);
-    const dockY = toY + (row === 'top' ? 34 : -34);
+    this.laneFx.push(copy.container);
+    const dockY = toY + (row === 'top' ? 12 : -12);
 
     this.tweens.add({
       targets: copy.container,
-      x: dockX,
+      x: DOCK_X,
       y: dockY,
       scale: 0.72,
       duration: 520,
       ease: 'Back.Out',
       onComplete: () => {
+        if (!target.container.active) return;
         target.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
         this.tweens.add({ targets: target.container, scale: 1.08, duration: 140, yoyo: true });
-        const score = this.scoreTexts.get(this.key(row, lane));
+        const score = this.scoreTexts.get(row);
         score?.setText(`${(totalAfter * 100).toFixed(1)}%`).setColor(COLORS.gold);
         if (score) this.tweens.add({ targets: score, scale: 1.3, duration: 140, yoyo: true });
         const floating = this.add.text(toX, toY, `✦ ${bonusLabel}`, {
-          fontSize: '24px', fontFamily: 'Arial', color: COLORS.gold, fontStyle: 'bold',
+          fontSize: '28px', fontFamily: 'Arial', color: COLORS.gold, fontStyle: 'bold',
         }).setOrigin(0.5).setDepth(60);
         glowText(floating);
-        this.tweens.add({ targets: floating, y: toY - 46, alpha: 0, duration: 900, onComplete: () => floating.destroy() });
-        // The partner is now red for the rest of the round.
-        if (partnerOnBoard) this.time.delayedCall(500, () => this.markUsedPartner(row, link.lane));
-        this.tweens.add({ targets: copy.container, alpha: 0, delay: 1500, duration: 450, onComplete: () => copy.container.destroy() });
+        this.tweens.add({ targets: floating, y: toY - 52, alpha: 0, duration: 900, onComplete: () => floating.destroy() });
+        // The partner is now red for the rest of the round: show it on the hand card right away.
+        if (handCard?.info.active) {
+          handCard.red = true;
+          handCard.container.add(this.add.rectangle(0, 0, HAND_W, HAND_H, hexToInt(USED_PARTNER_RED), 0.26).setRounded(7));
+          handCard.container.bringToTop(handCard.border);
+          handCard.container.bringToTop(handCard.info);
+          this.restoreHandBorder(handCard);
+          this.setInfo(handCard, null);
+        }
       },
     });
   }

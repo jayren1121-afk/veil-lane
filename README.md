@@ -28,6 +28,10 @@ The public Worker for this project is already deployed at
   (lane win rate + best partner %) plus a little random noise, then usually the highest-% partner (sometimes the
   runner-up). It only looks at its own hand and never at yours (`src/game/rules/cpu.ts`). After a short "thinking"
   delay its card slides down face-down, then the normal flip and partner pop play.
+- **Table**: one card position per side for the current lane (opponent above, you below). Each lane's cards fly in,
+  flip, partners pop in, the winner is shown, then the table is swept clear for the next lane. A lane title
+  (e.g. 上路 1/5 · +5%) and a 5-dot record (green won / red lost / gold draw) show progress. Cards you already played
+  stay in your hand, dimmed and tagged "已出 / PLAYED", because they can still be picked as partners.
 - **Accounts**: "Sign in with Google" keeps a nickname and win/loss record. "Play as guest" (nickname only) works
   without any account, so judges can try it instantly.
 - **Battle timer**: each lane has a 20-second countdown per player covering both the main card and the partner pick
