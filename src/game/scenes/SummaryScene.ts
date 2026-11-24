@@ -187,15 +187,19 @@ export class SummaryScene extends Phaser.Scene {
   }
 
   private animateSynergy(player: Player, lane: Lane, link: LaneSynergyLink, index: number) {
-    const first = this.laneCards.get(this.cardKey(player, link.lane));
     const second = this.laneCards.get(this.cardKey(player, lane));
-    if (!first || !second) return;
+    if (!second) return;
+    // The partner may be any card of the hand; only draw a link when it was also that lane's main card.
+    const partnerResult = this.result.laneResults.find(item => item.lane === link.lane);
+    const partnerMain = partnerResult ? (player === Player.P1 ? partnerResult.p1Card : partnerResult.p2Card) : null;
+    const first = partnerMain?.id === link.card.id ? this.laneCards.get(this.cardKey(player, link.lane)) : undefined;
     const color = player === Player.P1 ? COLORS.p1 : COLORS.p2;
     [first, second].forEach(card => {
+      if (!card) return;
       card.border.setStrokeStyle(4, hexToInt(COLORS.gold), 1);
       this.tweens.add({ targets: card.container, scale: 1.08, duration: 220, yoyo: true, ease: 'Sine.Out' });
     });
-    this.drawSynergyLink(player, link.lane, lane, color, index);
+    if (first) this.drawSynergyLink(player, link.lane, lane, color, index);
   }
 
   private drawSynergyLink(player: Player, laneA: Lane, laneB: Lane, color: string, index: number) {

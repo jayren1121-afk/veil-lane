@@ -26,7 +26,7 @@ export class MatchRoom extends DurableObject<Env> {
     ctx.blockConcurrencyWhile(async () => {
       const data = await ctx.storage.get<OnlineMatchData>('match');
       // Rooms saved by an older rules version (before lane-by-lane play) cannot be resumed.
-      this.match = data && 'play' in data ? new OnlineMatch(data) : null;
+      this.match = data && 'play' in data && (data.play === null || 'hands' in data.play) ? new OnlineMatch(data) : null;
       this.cleanupAt = (await ctx.storage.get<number>('cleanupAt')) ?? null;
     });
   }
@@ -101,6 +101,9 @@ export class MatchRoom extends DurableObject<Env> {
         return;
       case 'pick':
         error = typeof message.cardId === 'string' ? this.match.pick(attachment.player, message.cardId, now) : 'BAD_MESSAGE';
+        break;
+      case 'partner':
+        error = typeof message.cardId === 'string' ? this.match.partner(attachment.player, message.cardId, now) : 'BAD_MESSAGE';
         break;
       case 'ready':
         error = this.match.ready(attachment.player, now);

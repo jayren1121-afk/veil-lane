@@ -10,22 +10,30 @@ export interface PublicSeat {
 
 export interface BattleView {
   lead: Player;
-  /** Index into LANE_ORDER of the lane being picked; 5 once the round is over. */
+  /** Index into LANE_ORDER of the lane being played; 5 once the round is over. */
   laneIndex: number;
   currentLane: Lane | null;
-  /** This player's own two offered card ids for the current lane (never the opponent's). */
-  myOffer: string[];
-  /** This player's locked pick for the current lane, if any. */
-  myPick: string | null;
-  /** Whether the opponent has locked a pick for the current lane (the card itself stays hidden). */
-  opponentPicked: boolean;
-  /** This player's own played cards this round (lane -> card id). */
+  /** This player's own 10-card hand for the round: myHand[laneIndex] = that lane's two ids. Never the opponent's. */
+  myHand: string[][];
+  /** This player's locked main card for the current lane, if any. */
+  myMain: string | null;
+  /** This player's chosen partner for the current lane (null = none or not chosen yet). */
+  myPartner: string | null;
+  /** True while the main card is locked but this player still has to choose one of 2+ partners. */
+  needPartner: boolean;
+  /** Partner choices for the locked main card, best tier first (own hand only). */
+  myPartnerOptions: string[];
+  /** This player's red cards: already used as a partner this round. */
+  myRed: string[];
+  /** Whether the opponent has finished the current lane (main + partner); the cards stay hidden. */
+  opponentLocked: boolean;
+  /** This player's own played main cards this round (lane -> card id). */
   myCards: Partial<Record<Lane, string>>;
-  /** Lanes already resolved, with both cards, synergy links and the duel result. */
+  /** Lanes already resolved, with both main cards, chosen partners and the duel result. */
   revealed: LaneRevealResult[];
   /** Picks for the current lane open at this time (after the reveal animation pause). */
   turnStartsAt: number | null;
-  /** Server-enforced deadline; anyone who has not picked gets a random offered card. */
+  /** Server-enforced deadline; unfinished picks get a random main card and the best partner. */
   turnDeadline: number | null;
 }
 
@@ -51,6 +59,7 @@ export interface MatchView {
 
 export type ClientMessage =
   | { type: 'pick'; cardId: string }
+  | { type: 'partner'; cardId: string }
   | { type: 'ready' }
   | { type: 'ping' };
 

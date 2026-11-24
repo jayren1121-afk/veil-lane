@@ -1,26 +1,30 @@
 import { describe, it, expect } from 'vitest';
 import {
-  autoLanePick,
-  bothPicked,
+  autoCompletePick,
+  bothReady,
   cardById,
   createMatchState,
   createRoundPlay,
+  currentOffer,
   currentPlayLane,
+  dealHand,
   dealLaneOffer,
   GamePhase,
   getScoreString,
   isMatchOver,
+  isPlayerReady,
   isRoundPlayComplete,
   Lane,
   LANE_ORDER,
-  offerSynergies,
   OFFERS_PER_LANE,
+  partnerOptions,
   Player,
   recordRoundResult,
   resolveCurrentLane,
   resolveRound,
-  resolveRoundScores,
-  submitLanePick,
+  RoundPlay,
+  submitMainPick,
+  submitPartnerPick,
   summarizeRound,
   usedCardIdsFor,
 } from '../src/game/rules';
@@ -36,23 +40,50 @@ function seeded(seed: number): () => number {
 
 const noneUsed = () => ({ [Player.P1]: [] as string[], [Player.P2]: [] as string[] }) as Record<Player, string[]>;
 
-/** Play a full local round, always taking the offer at `choice`. */
+/** Finish the current lane for `player`: main card at `choice`, then the best partner if a choice is needed. */
+function finishTurn(play: RoundPlay, player: Player, choice = 0) {
+  const offer = currentOffer(play, player);
+  expect(submitMainPick(play, player, offer[Math.min(choice, offer.length - 1)])).toBeNull();
+  if (!play.partnerDone[player]) {
+    expect(submitPartnerPick(play, player, partnerOptions(play, player, play.mains[player]!)[0].card.id)).toBeNull();
+  }
+}
+
+/** Play a full local round, always taking the main card at `choice`. */
 function playRound(state: ReturnType<typeof createMatchState>, random: () => number, choice = 0) {
   const play = createRoundPlay(state.currentRound, {
     [Player.P1]: state.p1UsedCardIds,
     [Player.P2]: state.p2UsedCardIds,
   } as Record<Player, Set<string>>, random);
   while (!isRoundPlayComplete(play)) {
-    for (const player of [Player.P1, Player.P2]) {
-      const offer = play.offers[player];
-      expect(submitLanePick(play, player, offer[Math.min(choice, offer.length - 1)])).toBeNull();
-    }
-    expect(resolveCurrentLane(play, random)).not.toBeNull();
+    finishTurn(play, Player.P1, choice);
+    finishTurn(play, Player.P2, choice);
+    expect(resolveCurrentLane(play)).not.toBeNull();
   }
   const result = summarizeRound(play.results);
   recordRoundResult(state, result);
   return { play, result };
 }
+
+/**
+ * Search seeded rounds (playing main 0 + best partner) until `found` holds at the start of a
+ * lane; returns that live round. Real GRID data decides how often partners exist.
+ */
+function findLane(found: (play: RoundPlay) => boolean, maxSeeds = 4000): RoundPlay {
+  for (let seed = 1; seed < maxSeeds; seed++) {
+    const play = createRoundPlay(1, noneUsed(), seeded(seed));
+    while (!isRoundPlayComplete(play)) {
+      if (found(play)) return play;
+      finishTurn(play, Player.P1);
+      finishTurn(play, Player.P2);
+      resolveCurrentLane(play);
+    }
+  }
+  throw new Error('no matching lane found');
+}
+
+const optionCounts = (play: RoundPlay, player: Player) =>
+  currentOffer(play, player).map(id => partnerOptions(play, player, id).length);
 
 describe('Match Engine', () => {
   it('creates an empty match state with no draft phase', () => {
@@ -83,7 +114,7 @@ describe('Match Engine', () => {
   });
 });
 
-describe('lane dealing', () => {
+describe('dealing the 10-card hand', () => {
   it('deals two distinct cards that are legal in the lane and not blocked', () => {
     const blocked = CARDS.filter(card => card.lanes.includes(Lane.Top)).slice(0, 5).map(card => card.id);
     for (let seed = 1; seed < 30; seed++) {
@@ -97,81 +128,211 @@ describe('lane dealing', () => {
     }
   });
 
-  it('gives each player their own independent offers for the current lane', () => {
+  it('deals a full hand of 10 distinct cards, 2 legal cards per lane, skipping excluded ones', () => {
+    for (let seed = 1; seed < 40; seed++) {
+      const excluded = CARDS.slice(seed, seed + 15).map(card => card.id);
+      const hand = dealHand(excluded, seeded(seed));
+      expect(hand).toHaveLength(5);
+      const all = hand.flat();
+      expect(all).toHaveLength(10);
+      expect(new Set(all).size).toBe(10);
+      hand.forEach((ids, index) => {
+        expect(ids).toHaveLength(2);
+        for (const id of ids) expect(cardById(id)!.lanes).toContain(LANE_ORDER[index]);
+      });
+      for (const id of all) expect(excluded).not.toContain(id);
+    }
+  });
+
+  it('gives each player their own whole hand at the start of the round', () => {
     let differed = false;
     for (let seed = 1; seed < 20; seed++) {
       const play = createRoundPlay(1, noneUsed(), seeded(seed));
       expect(currentPlayLane(play)).toBe(Lane.Top);
-      expect(play.offers[Player.P1]).toHaveLength(2);
-      expect(play.offers[Player.P2]).toHaveLength(2);
-      if (play.offers[Player.P1].join() !== play.offers[Player.P2].join()) differed = true;
+      expect(play.hands[Player.P1].flat()).toHaveLength(10);
+      expect(play.hands[Player.P2].flat()).toHaveLength(10);
+      expect(currentOffer(play, Player.P1)).toEqual(play.hands[Player.P1][0]);
+      if (play.hands[Player.P1].flat().join() !== play.hands[Player.P2].flat().join()) differed = true;
     }
     expect(differed).toBe(true);
   });
+});
 
-  it('only accepts one of the player\'s own offered cards, once per lane', () => {
+describe('main card pick', () => {
+  it('only accepts one of the current lane\'s two cards from the player\'s own hand, once', () => {
     const play = createRoundPlay(1, noneUsed(), seeded(5));
-    const foreign = CARDS.find(card => card.lanes.includes(Lane.Top) && !play.offers[Player.P1].includes(card.id))!;
-    expect(submitLanePick(play, Player.P1, foreign.id)).toBe('INVALID_PICK');
-    expect(submitLanePick(play, Player.P1, play.offers[Player.P1][0])).toBeNull();
-    expect(submitLanePick(play, Player.P1, play.offers[Player.P1][1])).toBe('ALREADY_PICKED');
-    expect(bothPicked(play)).toBe(false);
+    const laterCard = play.hands[Player.P1][3][0];
+    const foreign = CARDS.find(card => card.lanes.includes(Lane.Top) && !play.hands[Player.P1].flat().includes(card.id))!;
+    expect(submitMainPick(play, Player.P1, laterCard)).toBe('INVALID_PICK');
+    expect(submitMainPick(play, Player.P1, foreign.id)).toBe('INVALID_PICK');
+    expect(submitPartnerPick(play, Player.P1, laterCard)).toBe('NO_MAIN');
+    expect(submitMainPick(play, Player.P1, currentOffer(play, Player.P1)[0])).toBeNull();
+    expect(submitMainPick(play, Player.P1, currentOffer(play, Player.P1)[1])).toBe('ALREADY_PICKED');
+    expect(bothReady(play)).toBe(false);
     expect(resolveCurrentLane(play)).toBeNull();
   });
 
-  it('auto-picks one of the offered cards on timeout', () => {
-    const play = createRoundPlay(1, noneUsed(), seeded(8));
-    const picked = autoLanePick(play, Player.P2, () => 0.99);
-    expect(picked).toBe(play.offers[Player.P2][1]);
-    expect(autoLanePick(play, Player.P2)).toBeNull();
-  });
-
-  it('plays the five lanes in order and resolves each with order bonus and synergy', () => {
+  it('plays the five lanes in order with the 5/4/3/2/1 order bonus', () => {
     const play = createRoundPlay(1, noneUsed(), seeded(11));
     const lanes: Lane[] = [];
     while (!isRoundPlayComplete(play)) {
       lanes.push(currentPlayLane(play)!);
-      submitLanePick(play, Player.P1, play.offers[Player.P1][0]);
-      submitLanePick(play, Player.P2, play.offers[Player.P2][1]);
+      finishTurn(play, Player.P1, 0);
+      finishTurn(play, Player.P2, 1);
       const result = resolveCurrentLane(play)!;
       expect(result.p1Total).toBeCloseTo(result.p1WinRate + result.orderBonus + result.p1Synergy.bonus, 10);
       expect(result.p2Total).toBeCloseTo(result.p2WinRate + result.orderBonus + result.p2Synergy.bonus, 10);
+      expect(result.p1Synergy.links.length).toBeLessThanOrEqual(1);
+      expect(result.p2Synergy.links.length).toBeLessThanOrEqual(1);
     }
     expect(lanes).toEqual(LANE_ORDER);
     expect(play.results.map(result => result.orderBonus)).toEqual([0.05, 0.04, 0.03, 0.02, 0.01]);
-    // Live scoring matches recomputing the round from the final line-ups.
-    const replay = resolveRoundScores(
-      play.results.map(result => ({ card: result.p1Card, lane: result.lane })),
-      play.results.map(result => ({ card: result.p2Card, lane: result.lane })),
-    );
-    expect(replay.p1WinRate).toBeCloseTo(summarizeRound(play.results).p1WinRate, 10);
+    expect(play.played[Player.P1]).toEqual(play.hands[Player.P1].map(ids => ids[0]));
   });
+});
 
-  it('shows an offer\'s synergy from the player\'s already-played cards only', () => {
-    // Search seeds until an offer carries synergy, then check it against played cards.
-    let found = false;
-    for (let seed = 1; seed < 400 && !found; seed++) {
-      const random = seeded(seed);
-      const play = createRoundPlay(1, noneUsed(), random);
-      while (!isRoundPlayComplete(play) && !found) {
-        const synergies = offerSynergies(play, Player.P1);
-        for (const synergy of Object.values(synergies)) {
-          if (synergy.bonus <= 0) continue;
-          found = true;
-          for (const link of synergy.links) expect(play.played[Player.P1]).toContain(link.card.id);
-          expect(synergy.bonus).toBeLessThanOrEqual(0.05 + 0.04 + 0.03 + 0.02 + 1e-9);
+describe('synergy partner from the whole hand', () => {
+  it('offers partners from other lanes of the hand only, played or not yet played, best first', () => {
+    let checked = 0;
+    for (let seed = 1; seed < 600; seed++) {
+      const play = createRoundPlay(1, noneUsed(), seeded(seed));
+      while (!isRoundPlayComplete(play)) {
+        for (const id of currentOffer(play, Player.P1)) {
+          const options = partnerOptions(play, Player.P1, id);
+          for (const link of options) {
+            expect(link.card.id).not.toBe(id);
+            expect(currentOffer(play, Player.P1)).not.toContain(link.card.id);
+            expect(play.hands[Player.P1][LANE_ORDER.indexOf(link.lane)]).toContain(link.card.id);
+            expect(link.lane).not.toBe(currentPlayLane(play));
+            checked++;
+          }
+          options.forEach((link, index) => { if (index > 0) expect(link.bonus).toBeLessThanOrEqual(options[index - 1].bonus); });
         }
-        submitLanePick(play, Player.P1, play.offers[Player.P1][0]);
-        submitLanePick(play, Player.P2, play.offers[Player.P2][0]);
-        resolveCurrentLane(play, random);
+        finishTurn(play, Player.P1);
+        finishTurn(play, Player.P2);
+        resolveCurrentLane(play);
       }
     }
-    expect(found).toBe(true);
+    expect(checked).toBeGreaterThan(0);
+    // Partners can come from lanes not played yet (the hand is known from the start).
+    const early = findLane(play => play.laneIndex === 0 && optionCounts(play, Player.P1).some(count => count > 0));
+    const main = currentOffer(early, Player.P1).find(id => partnerOptions(early, Player.P1, id).length > 0)!;
+    expect(partnerOptions(early, Player.P1, main).every(link => LANE_ORDER.indexOf(link.lane) > 0)).toBe(true);
+  });
+
+  it('skips the partner step with no partners and auto-uses a single partner', () => {
+    const none = findLane(play => optionCounts(play, Player.P1).includes(0));
+    const plain = currentOffer(none, Player.P1).find(id => partnerOptions(none, Player.P1, id).length === 0)!;
+    expect(submitMainPick(none, Player.P1, plain)).toBeNull();
+    expect(isPlayerReady(none, Player.P1)).toBe(true);
+    expect(none.partners[Player.P1]).toBeNull();
+
+    const single = findLane(play => optionCounts(play, Player.P1).includes(1));
+    const main = currentOffer(single, Player.P1).find(id => partnerOptions(single, Player.P1, id).length === 1)!;
+    const only = partnerOptions(single, Player.P1, main)[0];
+    expect(submitMainPick(single, Player.P1, main)).toBeNull();
+    expect(isPlayerReady(single, Player.P1)).toBe(true);
+    expect(single.partners[Player.P1]).toBe(only.card.id);
+    expect(submitPartnerPick(single, Player.P1, only.card.id)).toBe('ALREADY_PICKED');
+    finishTurn(single, Player.P2);
+    const result = resolveCurrentLane(single)!;
+    expect(result.p1Synergy).toEqual({ links: [only], bonus: only.bonus });
+  });
+
+  it('with 2+ partners the player picks exactly one and only its % counts (no stacking)', () => {
+    const play = findLane(p => optionCounts(p, Player.P1).some(count => count >= 2));
+    const main = currentOffer(play, Player.P1).find(id => partnerOptions(play, Player.P1, id).length >= 2)!;
+    const options = partnerOptions(play, Player.P1, main);
+    expect(submitMainPick(play, Player.P1, main)).toBeNull();
+    expect(isPlayerReady(play, Player.P1)).toBe(false);
+    const notOption = play.hands[Player.P1].flat().find(id => id !== main && !options.some(link => link.card.id === id))!;
+    expect(submitPartnerPick(play, Player.P1, notOption)).toBe('INVALID_PARTNER');
+    // Choose the weaker partner on purpose: the stronger one must not be added.
+    const chosen = options[1];
+    expect(submitPartnerPick(play, Player.P1, chosen.card.id)).toBeNull();
+    expect(submitPartnerPick(play, Player.P1, options[0].card.id)).toBe('ALREADY_PICKED');
+    finishTurn(play, Player.P2);
+    const result = resolveCurrentLane(play)!;
+    expect(result.p1Synergy.links.map(link => link.card.id)).toEqual([chosen.card.id]);
+    expect(result.p1Synergy.bonus).toBeCloseTo(chosen.bonus, 10);
+    expect(result.p1Total).toBeCloseTo(result.p1WinRate + result.orderBonus + chosen.bonus, 10);
+    expect(play.red[Player.P1]).toEqual(expect.arrayContaining([chosen.card.id]));
+    expect(play.red[Player.P1]).not.toContain(options[0].card.id);
+  });
+
+  it('on timeout picks a random main card, then the highest-% partner', () => {
+    const play = findLane(p => optionCounts(p, Player.P1)[1] >= 2);
+    expect(autoCompletePick(play, Player.P1, () => 0.99)).toBe(true);
+    const main = currentOffer(play, Player.P1)[1];
+    expect(play.mains[Player.P1]).toBe(main);
+    expect(play.partners[Player.P1]).toBe(partnerOptions(play, Player.P1, main)[0].card.id);
+    expect(isPlayerReady(play, Player.P1)).toBe(true);
+    expect(autoCompletePick(play, Player.P1)).toBe(false);
+
+    // Main already locked but partner still open: only the partner is filled in.
+    const open = findLane(p => optionCounts(p, Player.P1)[0] >= 2);
+    const lockedMain = currentOffer(open, Player.P1)[0];
+    submitMainPick(open, Player.P1, lockedMain);
+    autoCompletePick(open, Player.P1, () => 0.99);
+    expect(open.mains[Player.P1]).toBe(lockedMain);
+    expect(open.partners[Player.P1]).toBe(partnerOptions(open, Player.P1, lockedMain)[0].card.id);
+  });
+});
+
+describe('red cards (used partners)', () => {
+  it('a used partner turns red: never a partner again this round, still playable as main, reset next round', () => {
+    // A lane where the main's best partner is a card dealt for a LATER lane, so it can become a main afterwards.
+    const play = findLane(p => {
+      const main = currentOffer(p, Player.P1)[0];
+      const best = partnerOptions(p, Player.P1, main)[0];
+      return Boolean(best) && LANE_ORDER.indexOf(best.lane) > p.laneIndex;
+    });
+    const main = currentOffer(play, Player.P1)[0];
+    const partner = partnerOptions(play, Player.P1, main)[0];
+    finishTurn(play, Player.P1, 0);
+    expect(play.partners[Player.P1]).toBe(partner.card.id);
+    finishTurn(play, Player.P2);
+    resolveCurrentLane(play);
+    expect(play.red[Player.P1]).toContain(partner.card.id);
+
+    // From now on it is never offered as a partner, for any main card.
+    let redLaneSeen = false;
+    while (!isRoundPlayComplete(play)) {
+      for (const id of currentOffer(play, Player.P1)) {
+        expect(partnerOptions(play, Player.P1, id).map(link => link.card.id)).not.toContain(partner.card.id);
+      }
+      if (currentPlayLane(play) === partner.lane) {
+        // Its own lane: the red card can still be played as the main card.
+        redLaneSeen = true;
+        expect(submitMainPick(play, Player.P1, partner.card.id)).toBeNull();
+        if (!play.partnerDone[Player.P1]) {
+          expect(submitPartnerPick(play, Player.P1, partnerOptions(play, Player.P1, partner.card.id)[0].card.id)).toBeNull();
+        }
+      } else {
+        finishTurn(play, Player.P1);
+      }
+      finishTurn(play, Player.P2);
+      const result = resolveCurrentLane(play)!;
+      if (result.lane === partner.lane) {
+        expect(result.p1Card.id).toBe(partner.card.id);
+        // As a main card it gets its own partner from the other still-eligible cards (never itself).
+        for (const link of result.p1Synergy.links) expect(link.card.id).not.toBe(partner.card.id);
+      }
+      for (const link of result.p1Synergy.links) expect(link.card.id).not.toBe(partner.card.id);
+    }
+    expect(redLaneSeen).toBe(true);
+    // Red never repeats within a round.
+    expect(new Set(play.red[Player.P1]).size).toBe(play.red[Player.P1].length);
+
+    // Next round: red resets.
+    const next = createRoundPlay(2, { [Player.P1]: play.played[Player.P1], [Player.P2]: play.played[Player.P2] } as Record<Player, string[]>, seeded(1));
+    expect(next.red[Player.P1]).toEqual([]);
+    expect(next.red[Player.P2]).toEqual([]);
   });
 });
 
 describe('Fearless across the match', () => {
-  it('never deals a card the player already played, across lanes and rounds', () => {
+  it('never deals a card the player already played as MAIN, across rounds', () => {
     const random = seeded(42);
     const state = createMatchState(3);
     const played: Record<Player, string[]> = { [Player.P1]: [], [Player.P2]: [] } as Record<Player, string[]>;
@@ -180,20 +341,22 @@ describe('Fearless across the match', () => {
         [Player.P1]: state.p1UsedCardIds,
         [Player.P2]: state.p2UsedCardIds,
       } as Record<Player, Set<string>>, random);
+      for (const player of [Player.P1, Player.P2]) {
+        for (const id of play.hands[player].flat()) expect(played[player]).not.toContain(id);
+      }
       while (!isRoundPlayComplete(play)) {
         for (const player of [Player.P1, Player.P2]) {
-          for (const id of play.offers[player]) expect(played[player]).not.toContain(id);
-          const pick = play.offers[player][0];
-          played[player].push(pick);
-          submitLanePick(play, player, pick);
+          finishTurn(play, player);
+          played[player].push(play.mains[player]!);
         }
-        resolveCurrentLane(play, random);
+        resolveCurrentLane(play);
       }
       recordRoundResult(state, summarizeRound(play.results));
     }
     expect(new Set(played[Player.P1]).size).toBe(15);
     expect(new Set(played[Player.P2]).size).toBe(15);
-    expect(usedCardIdsFor(state, Player.P1).size).toBe(15);
+    // Only main cards are Fearless-blocked; partners are not.
+    expect([...usedCardIdsFor(state, Player.P1)].sort()).toEqual([...played[Player.P1]].sort());
     expect(isMatchOver(state)).toBe(true);
     expect(state.roundResults).toHaveLength(3);
   });
@@ -219,33 +382,5 @@ describe('Fearless across the match', () => {
     expect(state.currentRound).toBe(2);
     for (const item of p1) expect(state.p1UsedCardIds.has(item.card.id)).toBe(true);
     for (const item of p2) expect(state.p2UsedCardIds.has(item.card.id)).toBe(true);
-  });
-});
-
-describe('once-per-round synergy partners in live play', () => {
-  it('a used partner stops glowing for later offers and is eligible again next round', () => {
-    let checked = 0;
-    for (let seed = 1; seed < 3000 && checked < 3; seed++) {
-      const random = seeded(seed);
-      const play = createRoundPlay(1, noneUsed(), random);
-      while (!isRoundPlayComplete(play)) {
-        const used = new Set(play.results.flatMap(r => r.p1Synergy.links.map(l => l.card.id)));
-        for (const synergy of Object.values(offerSynergies(play, Player.P1))) {
-          for (const link of synergy.links) expect(used.has(link.card.id)).toBe(false);
-          if (used.size > 0) checked++;
-        }
-        // Prefer a glowing card so partners actually get used.
-        const syn = offerSynergies(play, Player.P1);
-        const glowing = play.offers[Player.P1].find(id => syn[id].bonus > 0) ?? play.offers[Player.P1][0];
-        submitLanePick(play, Player.P1, glowing);
-        submitLanePick(play, Player.P2, play.offers[Player.P2][0]);
-        const result = resolveCurrentLane(play, random)!;
-        for (const link of result.p1Synergy.links) expect(used.has(link.card.id)).toBe(false);
-      }
-      // A new round has no used partners.
-      const next = createRoundPlay(2, { [Player.P1]: play.played[Player.P1], [Player.P2]: play.played[Player.P2] } as Record<Player, string[]>, random);
-      expect(next.results).toEqual([]);
-    }
-    expect(checked).toBeGreaterThan(0);
   });
 });

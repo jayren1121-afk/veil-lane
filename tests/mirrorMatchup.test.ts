@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeShrinkageWinRate,
-  computeLaneSynergy,
   Lane,
   Player,
   resolveLaneDuel,
@@ -28,7 +27,7 @@ describe('same-card mirror matchups', () => {
     expect(result.laneWinner).toBeNull();
   });
 
-  it('still scores a full round when one lane is a mirror, including synergies', () => {
+  it('still scores a full round when one lane is a mirror, without partners', () => {
     const p1 = [
       { card: cardFor(Lane.Top, 0), lane: Lane.Top },
       { card: cardFor(Lane.Jungle, 0), lane: Lane.Jungle },
@@ -51,9 +50,10 @@ describe('same-card mirror matchups', () => {
     expect(result.p2WinRate).toBeGreaterThan(0);
     expect(Number.isFinite(result.p1SynergyAvg)).toBe(true);
     expect(Number.isFinite(result.p2SynergyAvg)).toBe(true);
-    // Synergy is a same-team calculation and is unaffected by the mirrored Top lane.
-    result.laneResults.forEach((lane, index) => {
-      expect(computeLaneSynergy(p1[index].card, p1[index].lane, p1.slice(0, index)).bonus).toBe(lane.p1Synergy.bonus);
+    // Without chosen partners no lane gets synergy, mirrored or not.
+    result.laneResults.forEach(lane => {
+      expect(lane.p1Synergy.bonus).toBe(0);
+      expect(lane.p2Synergy.bonus).toBe(0);
     });
   });
 });

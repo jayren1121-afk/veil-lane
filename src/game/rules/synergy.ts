@@ -73,29 +73,33 @@ export function rankSynergyPartners(
 }
 
 /**
- * Synergy that `card` played in `lane` gets from the player's already-played cards this round.
- * Each played card that is one of the card's top-five obvious partners adds its tier bonus.
- * A card already used as a synergy partner earlier this round (`usedPartners`) can't be a
- * partner again until the next round; it can still be played as a main card.
+ * Synergy partners available to `main` played in `lane`: any OTHER card in the player's hand
+ * (dealt for a different lane, played or not) that is one of the main card's top-five obvious
+ * partners and is not red (already used as a partner this round). Best tier first.
  */
-export function computeLaneSynergy(
-  card: Card,
+export function eligiblePartners(
+  main: Card,
   lane: Lane,
-  played: Placement[],
-  ranking: RankedPartner[] = rankSynergyPartners(card.id, lane),
-  usedPartners: ReadonlySet<string> = new Set(),
-): LaneSynergy {
+  hand: Placement[],
+  red: ReadonlySet<string> = new Set(),
+  ranking: RankedPartner[] = rankSynergyPartners(main.id, lane),
+): LaneSynergyLink[] {
   const links: LaneSynergyLink[] = [];
   for (const partner of ranking) {
-    if (usedPartners.has(partner.cardId)) continue;
-    const placement = played.find(item => item.card.id === partner.cardId && item.lane === partner.lane);
-    if (!placement || placement.card.id === card.id) continue;
+    if (partner.cardId === main.id || red.has(partner.cardId)) continue;
+    const placement = hand.find(item => item.lane !== lane && item.card.id === partner.cardId && item.lane === partner.lane);
+    if (!placement) continue;
     links.push({ card: placement.card, lane: placement.lane, edge: partner.edge, rank: partner.rank, bonus: partner.bonus });
   }
-  return { links, bonus: links.reduce((sum, link) => sum + link.bonus, 0) };
+  return links;
 }
 
-/** Card ids that already served as a synergy partner for `side` in these resolved lanes. */
+/** Synergy for one lane: synergy never stacks, so it is the single chosen partner (or none). */
+export function laneSynergyOf(partner: LaneSynergyLink | null | undefined): LaneSynergy {
+  return partner ? { links: [partner], bonus: partner.bonus } : { links: [], bonus: 0 };
+}
+
+/** Card ids that already served as a synergy partner for `side` in these resolved lanes (red cards). */
 export function usedSynergyPartners(results: LaneRevealResult[], side: Player): Set<string> {
   const used = new Set<string>();
   for (const result of results) {

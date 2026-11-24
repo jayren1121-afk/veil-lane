@@ -3,9 +3,9 @@
  * so the Durable Object and unit tests share the exact same rules engine.
  */
 import {
-  autoLanePick,
+  autoCompletePick,
   BATTLE_TURN_SECONDS,
-  bothPicked,
+  bothReady,
   createRoundPlay,
   createTurnDeadline,
   currentPlayLane,
@@ -22,7 +22,10 @@ import {
   resolveCurrentLane,
   RoundPlay,
   RoundResult,
-  submitLanePick,
+  isPlayerReady,
+  partnerOptions,
+  submitMainPick,
+  submitPartnerPick,
   summarizeRound,
   TOTAL_ROUNDS,
 } from '../rules';
@@ -140,7 +143,7 @@ export class OnlineMatch {
     };
   }
 
-  /** Deal the first lane of a new round; picks open after the intro. */
+  /** Deal both 10-card hands for a new round; picks open after the intro. */
   private startRound(now: number, introMs: number): void {
     this.data.phase = 'battle';
     this.data.play = createRoundPlay(this.data.round, {
@@ -160,7 +163,7 @@ export class OnlineMatch {
   /** Resolve the current lane, then either open the next lane after the pause or end the round. */
   private resolveLane(now: number): void {
     const play = this.data.play!;
-    if (!resolveCurrentLane(play, this.random)) return;
+    if (!resolveCurrentLane(play)) return;
     if (isRoundPlayComplete(play)) {
       this.finishRound(now);
     } else {
@@ -193,14 +196,25 @@ export class OnlineMatch {
 
   // ---------- actions ----------
 
-  /** Lock one of `player`'s two offered cards for the current lane. */
+  /** Lock one of `player`'s two cards for the current lane as the MAIN card. */
   pick(player: Player, cardId: string, now: number): string | null {
     this.tick(now);
     const play = this.data.play;
     if (this.data.phase !== 'battle' || !play || isRoundPlayComplete(play)) return 'NOT_BATTLE_PHASE';
-    const error = submitLanePick(play, player, cardId);
+    const error = submitMainPick(play, player, cardId);
     if (error) return error;
-    if (bothPicked(play)) this.resolveLane(now);
+    if (bothReady(play)) this.resolveLane(now);
+    return null;
+  }
+
+  /** Choose the single synergy partner for `player`'s locked main card. */
+  partner(player: Player, cardId: string, now: number): string | null {
+    this.tick(now);
+    const play = this.data.play;
+    if (this.data.phase !== 'battle' || !play || isRoundPlayComplete(play)) return 'NOT_BATTLE_PHASE';
+    const error = submitPartnerPick(play, player, cardId);
+    if (error) return error;
+    if (bothReady(play)) this.resolveLane(now);
     return null;
   }
 
@@ -225,8 +239,8 @@ export class OnlineMatch {
       const play = this.data.play;
       if (this.data.phase === 'battle' && play && !isRoundPlayComplete(play) && this.data.turnDeadline !== null
         && isTurnExpired(this.data.turnDeadline, now)) {
-        autoLanePick(play, Player.P1, this.random);
-        autoLanePick(play, Player.P2, this.random);
+        autoCompletePick(play, Player.P1, this.random);
+        autoCompletePick(play, Player.P2, this.random);
         this.resolveLane(now);
         changed = true;
         continue;
@@ -254,8 +268,8 @@ export class OnlineMatch {
   // ---------- views ----------
 
   /**
-   * Everything `player` is allowed to see. The opponent's offered cards and current pick are
-   * never included; their played cards only appear inside resolved lane results.
+   * Everything `player` is allowed to see. The opponent's hand, current main card and partner
+   * are never included; their cards only appear inside resolved lane results.
    */
   viewFor(player: Player, now: number): MatchView {
     const data = this.data;
@@ -276,9 +290,14 @@ export class OnlineMatch {
         lead: this.firstPlayer(),
         laneIndex: play.laneIndex,
         currentLane: live ? currentPlayLane(play) : null,
-        myOffer: live ? [...play.offers[player]] : [],
-        myPick: live ? play.picks[player] : null,
-        opponentPicked: live ? play.picks[opponent] !== null : false,
+        myHand: play.hands[player].map(ids => [...ids]),
+        myMain: live ? play.mains[player] : null,
+        myPartner: live ? play.partners[player] : null,
+        needPartner: live && play.mains[player] !== null && !play.partnerDone[player],
+        myPartnerOptions: live && play.mains[player] !== null
+          ? partnerOptions(play, player, play.mains[player]!).map(link => link.card.id) : [],
+        myRed: [...play.red[player]],
+        opponentLocked: live ? isPlayerReady(play, opponent) : false,
         myCards,
         revealed: play.results,
         turnStartsAt: live ? data.turnStartsAt : null,

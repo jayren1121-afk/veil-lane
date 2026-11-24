@@ -179,21 +179,29 @@ export enum GamePhase {
 // --- Lane-by-lane play ---
 
 /**
- * One round played lane by lane. Each lane, both players are dealt their own two random
- * cards and secretly play one. Plain JSON so the online server can persist it.
+ * One round. At the start each player is dealt a 10-card hand (2 random cards per lane) that
+ * they can see the whole round. Each lane, both players secretly play one of that lane's two
+ * cards as the MAIN card and choose at most one synergy partner from the rest of their hand.
+ * Plain JSON so the online server can persist it.
  */
 export interface RoundPlay {
   round: number;
   /** Index into LANE_ORDER of the lane being played; 5 when the round is complete. */
   laneIndex: number;
-  /** Cards each player may not be dealt this round (Fearless from earlier rounds). */
+  /** Cards each player may not be dealt this round (main cards played in earlier rounds). */
   excluded: Record<Player, string[]>;
-  /** The current lane's offered card ids, per player. Never send the opponent's to a client. */
-  offers: Record<Player, string[]>;
-  /** The current lane's locked picks (null = still choosing). */
-  picks: Record<Player, string | null>;
-  /** Cards played so far this round, in lane order. */
+  /** Each player's hand: hands[player][laneIndex] = the two card ids dealt for that lane. */
+  hands: Record<Player, string[][]>;
+  /** Current lane's locked main card (null = still choosing). */
+  mains: Record<Player, string | null>;
+  /** Current lane's chosen partner card id (null = none / not chosen yet). */
+  partners: Record<Player, string | null>;
+  /** True once the player's partner step for the current lane is settled (picked, auto or none). */
+  partnerDone: Record<Player, boolean>;
+  /** Main cards played so far this round, in lane order. */
   played: Record<Player, string[]>;
+  /** Cards already used as a partner this round (red): never a partner again until next round. */
+  red: Record<Player, string[]>;
   results: LaneRevealResult[];
 }
 

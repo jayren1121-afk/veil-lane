@@ -1,12 +1,16 @@
 # Veil Lane
 
 Hidden-card lane duel built with Vite + TypeScript + Phaser 4 (Cloud9 x JetBrains "Sky's The Limit" 2026, Event Mini Game).
-Lanes are played in order (Top → Support). Each lane, both players are dealt their own two random cards and secretly
-play one. A card that synergizes with cards you already played glows gold and shows its bonus: per the aggregated
-pro-match synergy table, a card's best partner adds +5%, then +4/+3/+2/+1% (`SYNERGY_TIER`). When the lane flips, the
-partner cards pop out and add their bonus on screen. A card can serve as a synergy partner only once per round (it can still
-be played as a main card), and this resets every round. Lane score = matchup win rate + order bonus (+5…+1%) + synergy.
-Best of 3, Fearless: a card you played is never dealt to you again in the match.
+At the start of each round both players are dealt their own 10-card hand: 2 random cards for each lane, visible to them
+all round. Lanes are played in order (Top → Support). Each lane, each player secretly picks one of that lane's two cards as
+the MAIN card, then one synergy partner from the rest of their hand (any other lane, played or not). Per the aggregated
+pro-match synergy table, the main card's best partner gives +5%, then +4/+3/+2/+1% (`SYNERGY_TIER`); eligible partners
+glow gold with their %. Synergy does not stack: with 2+ eligible partners you choose one, with exactly one it is used
+automatically, with none the step is skipped. A chosen partner turns red for the rest of the round and can't be a partner
+again (it can still be played as the main card in its own lane, with its own partner pick); red resets every round. Both
+main cards go down face-down and flip together, each side's partner flies in, and lane score = matchup win rate + order
+bonus (+5…+1%) + partner %. The opponent's hand, main card and partner stay hidden until the flip.
+Best of 3, Fearless: a card you played as MAIN is never dealt to you again in the match.
 
 The public Worker for this project is already deployed at
 <https://veil-lane-server.jayren1121.workers.dev>. For the frontend, set
@@ -20,9 +24,9 @@ The public Worker for this project is already deployed at
 - **Local 2-player**: the original hot-seat mode, no server needed.
 - **Accounts**: "Sign in with Google" keeps a nickname and win/loss record. "Play as guest" (nickname only) works
   without any account, so judges can try it instantly.
-- **Battle timer**: each lane pick has a 20-second countdown per player (`BATTLE_TURN_SECONDS` in
-  `src/game/rules/constants.ts`). It turns red for the last 5 seconds; on timeout one of the two offered cards is played
-  at random. Online, the server enforces it with Durable Object alarms. Local mode accepts `?seed=N` for reproducible deals.
+- **Battle timer**: each lane has a 20-second countdown per player covering both the main card and the partner pick
+  (`BATTLE_TURN_SECONDS` in `src/game/rules/constants.ts`). It turns red for the last 5 seconds; on timeout a random main
+  card of the lane's two is played, then the highest-% partner. Online, the server enforces it with Durable Object alarms. Local mode accepts `?seed=N` for reproducible deals.
 
 ## Develop
 

@@ -1,9 +1,9 @@
-import { Card, Lane, Placement, TeamScore, LaneMatchupDetail, SynergyDetail, RoundResult, Player, LaneRevealResult, LANE_ORDER } from './types';
+import { Card, Lane, Placement, TeamScore, LaneMatchupDetail, SynergyDetail, RoundResult, Player, LaneRevealResult, LaneSynergyLink, LANE_ORDER } from './types';
 import { getMatchup } from '../data/matchups';
 import { getSynergy } from '../data/synergies';
 import { getLaneWinRate } from '../data/cards';
 import { ALPHA, BETA, K, ORDER_BONUS, WIN_RATE_TIE_EPSILON } from './constants';
-import { computeLaneSynergy, usedSynergyPartners } from './synergy';
+import { laneSynergyOf } from './synergy';
 
 /**
  * Logit function: ln(p / (1 - p))
@@ -206,18 +206,16 @@ export function computeTeamScore(
 }
 
 /**
- * Resolve a single lane duel. Each side's lane total is its matchup win rate, plus the
- * common order bonus, plus the synergy its card gets from that side's earlier-played cards.
+ * Resolve a single lane duel. Each side's lane total is its matchup win rate, plus the common
+ * order bonus, plus the tier bonus of the one synergy partner that side chose (if any).
  */
 export function resolveLaneDuel(
   p1Card: Card,
   p2Card: Card,
   lane: Lane,
   orderIndex = 0,
-  p1Played: Placement[] = [],
-  p2Played: Placement[] = [],
-  p1UsedPartners: ReadonlySet<string> = new Set(),
-  p2UsedPartners: ReadonlySet<string> = new Set(),
+  p1Partner: LaneSynergyLink | null = null,
+  p2Partner: LaneSynergyLink | null = null,
 ): LaneRevealResult {
   const p1Shrinkage = computeShrinkageWinRate(p1Card, p2Card, lane);
   const p2Shrinkage = computeShrinkageWinRate(p2Card, p1Card, lane);
@@ -230,8 +228,8 @@ export function resolveLaneDuel(
   const matchupDelta = p1MuLogit - p1BaseLogit;
 
   const orderBonus = (ORDER_BONUS[orderIndex] ?? 0) / 100;
-  const p1Synergy = computeLaneSynergy(p1Card, lane, p1Played, undefined, p1UsedPartners);
-  const p2Synergy = computeLaneSynergy(p2Card, lane, p2Played, undefined, p2UsedPartners);
+  const p1Synergy = laneSynergyOf(p1Partner);
+  const p2Synergy = laneSynergyOf(p2Partner);
   const p1Total = p1WinRate + orderBonus + p1Synergy.bonus;
   const p2Total = p2WinRate + orderBonus + p2Synergy.bonus;
 
@@ -287,33 +285,25 @@ export function summarizeRound(laneResults: LaneRevealResult[], firstPlayer: Pla
 }
 
 /**
- * Resolve a full round from both line-ups, playing lanes in `revealOrder`. Each lane's synergy
- * only counts cards that side played in earlier lanes and that have not already been used as a
- * partner this round, exactly as in live play.
+ * Resolve a full round from both line-ups, playing lanes in `revealOrder`. Optional chosen
+ * partners per lane (one per side, synergy never stacks); lanes without one get no synergy.
  */
 export function resolveRoundScores(
   p1Placements: Placement[],
   p2Placements: Placement[],
   revealOrder: Lane[] = LANE_ORDER,
-  firstPlayer: Player = Player.P1
+  firstPlayer: Player = Player.P1,
+  p1Partners: Partial<Record<Lane, LaneSynergyLink | null>> = {},
+  p2Partners: Partial<Record<Lane, LaneSynergyLink | null>> = {},
 ): RoundResult {
   const laneResults: LaneRevealResult[] = [];
-  const p1Played: Placement[] = [];
-  const p2Played: Placement[] = [];
-
-  for (let orderIndex = 0; orderIndex < revealOrder.length; orderIndex++) {
-    const lane = revealOrder[orderIndex];
+  for (const lane of revealOrder) {
     const p1Place = p1Placements.find(p => p.lane === lane);
     const p2Place = p2Placements.find(p => p.lane === lane);
     if (!p1Place || !p2Place) continue;
-
     laneResults.push(resolveLaneDuel(
-      p1Place.card, p2Place.card, lane, laneResults.length, p1Played, p2Played,
-      usedSynergyPartners(laneResults, Player.P1), usedSynergyPartners(laneResults, Player.P2),
+      p1Place.card, p2Place.card, lane, laneResults.length, p1Partners[lane] ?? null, p2Partners[lane] ?? null,
     ));
-    p1Played.push(p1Place);
-    p2Played.push(p2Place);
   }
-
   return summarizeRound(laneResults, firstPlayer);
 }

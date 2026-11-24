@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   CardRole,
-  computeLaneSynergy,
+  eligiblePartners,
+  laneSynergyOf,
+  resolveLaneDuel,
+  usedSynergyPartners,
+  Player,
   computeSynergyEdge,
   Lane,
   LANE_ORDER,
@@ -55,24 +59,38 @@ describe('tiered per-lane synergy', () => {
     expect(rankSynergyPartners('t6', partners[5].lanes[0], table, byId)[0]).toMatchObject({ cardId: star.id, rank: 1, bonus: 0.05 });
   });
 
-  it('adds the tier bonus of every already-played partner to the lane', () => {
+  it('offers every eligible partner from the whole hand, best tier first', () => {
     const ranked = rankSynergyPartners(star.id, Lane.Mid, table, byId);
-    const played: Placement[] = [
-      { card: partners[5], lane: partners[5].lanes[0] }, // rank 1 -> +5%
+    const hand: Placement[] = [
+      { card: partners[0], lane: partners[0].lanes[0] }, // rank 6 -> not eligible
       { card: partners[2], lane: partners[2].lanes[0] }, // rank 4 -> +2%
-      { card: partners[0], lane: partners[0].lanes[0] }, // rank 6 -> 0
-      { card: weak, lane: Lane.Bot },                    // below threshold -> 0
+      { card: weak, lane: Lane.Bot },                    // below threshold -> not eligible
+      { card: partners[5], lane: partners[5].lanes[0] }, // rank 1 -> +5%
     ];
-    const synergy = computeLaneSynergy(star, Lane.Mid, played, ranked);
-    expect(synergy.links.map(link => [link.card.id, link.rank, link.bonus])).toEqual([['t6', 1, 0.05], ['t3', 4, 0.02]]);
-    expect(synergy.bonus).toBeCloseTo(0.07, 10);
-    expect(computeLaneSynergy(star, Lane.Mid, [], ranked)).toEqual({ links: [], bonus: 0 });
+    const links = eligiblePartners(star, Lane.Mid, hand, new Set(), ranked);
+    expect(links.map(link => [link.card.id, link.rank, link.bonus])).toEqual([['t6', 1, 0.05], ['t3', 4, 0.02]]);
+    expect(eligiblePartners(star, Lane.Mid, [], new Set(), ranked)).toEqual([]);
   });
 
-  it('requires the partner to have been played in the lane the pair was recorded for', () => {
+  it('only matches a partner dealt for the lane the pair was recorded in, never the main lane', () => {
     const ranked = rankSynergyPartners(star.id, Lane.Mid, table, byId);
     const wrongLane = partners[5].lanes[0] === Lane.Top ? Lane.Jungle : Lane.Top;
-    expect(computeLaneSynergy(star, Lane.Mid, [{ card: partners[5], lane: wrongLane }], ranked).bonus).toBe(0);
+    expect(eligiblePartners(star, Lane.Mid, [{ card: partners[5], lane: wrongLane }], new Set(), ranked)).toEqual([]);
+    expect(eligiblePartners(star, Lane.Mid, [{ card: star, lane: Lane.Mid }], new Set(), ranked)).toEqual([]);
+  });
+
+  it('does not stack: a lane gets exactly the one chosen partner', () => {
+    const ranked = rankSynergyPartners(star.id, Lane.Mid, table, byId);
+    const hand: Placement[] = [partners[5], partners[4], partners[3]].map(card => ({ card, lane: card.lanes[0] }));
+    const links = eligiblePartners(star, Lane.Mid, hand, new Set(), ranked);
+    expect(links).toHaveLength(3);
+    expect(laneSynergyOf(links[1])).toEqual({ links: [links[1]], bonus: 0.04 });
+    expect(laneSynergyOf(null)).toEqual({ links: [], bonus: 0 });
+    const real = CARDS.filter(card => card.lanes.includes(Lane.Mid));
+    const withPartner = resolveLaneDuel(real[0], real[1], Lane.Mid, 0, links[1], null);
+    const without = resolveLaneDuel(real[0], real[1], Lane.Mid, 0);
+    expect(withPartner.p1Total - without.p1Total).toBeCloseTo(0.04, 10);
+    expect(withPartner.p2Total).toBeCloseTo(without.p2Total, 10);
   });
 
   it('ranks the bundled aggregate table with at most five tiered partners per card', () => {
@@ -93,56 +111,24 @@ describe('tiered per-lane synergy', () => {
   });
 });
 
-describe('a partner can only be used once per round', () => {
-  it('skips partners already used this round but still counts the others', () => {
+describe('red cards: a partner can only be used once per round', () => {
+  it('skips red partners but still offers the others', () => {
     const ranked = rankSynergyPartners(star.id, Lane.Mid, table, byId);
-    const played: Placement[] = [
-      { card: partners[5], lane: partners[5].lanes[0] }, // rank 1 (+5%) but already used
+    const hand: Placement[] = [
+      { card: partners[5], lane: partners[5].lanes[0] }, // rank 1 (+5%) but red
       { card: partners[4], lane: partners[4].lanes[0] }, // rank 2 (+4%)
     ];
-    const synergy = computeLaneSynergy(star, Lane.Mid, played, ranked, new Set([partners[5].id]));
-    expect(synergy.links.map(link => link.card.id)).toEqual(['t5']);
-    expect(synergy.bonus).toBeCloseTo(0.04, 10);
-    // Nothing glows when the only partner is used up.
-    expect(computeLaneSynergy(star, Lane.Mid, played.slice(0, 1), ranked, new Set([partners[5].id])).bonus).toBe(0);
+    const links = eligiblePartners(star, Lane.Mid, hand, new Set([partners[5].id]), ranked);
+    expect(links.map(link => link.card.id)).toEqual(['t5']);
+    // Nothing glows when the only partner is red.
+    expect(eligiblePartners(star, Lane.Mid, hand.slice(0, 1), new Set([partners[5].id]), ranked)).toEqual([]);
   });
 
-  it('applies within a round from real data, and resets the next round', () => {
-    // Find a card A that is an obvious partner of two cards B and C in later, distinct lanes.
-    let chain: { a: Placement; b: Placement; c: Placement } | null = null;
-    const index = (lane: Lane) => LANE_ORDER.indexOf(lane);
-    outer: for (const b of CARDS) for (const laneB of b.lanes) {
-      for (const pa of rankSynergyPartners(b.id, laneB)) {
-        if (index(pa.lane) >= index(laneB)) continue;
-        for (const c of CARDS) for (const laneC of c.lanes) {
-          if (c.id === b.id || c.id === pa.cardId || index(laneC) <= index(laneB)) continue;
-          if (rankSynergyPartners(c.id, laneC).some(p => p.cardId === pa.cardId && p.lane === pa.lane)) {
-            const a = CARDS.find(card => card.id === pa.cardId)!;
-            chain = { a: { card: a, lane: pa.lane }, b: { card: b, lane: laneB }, c: { card: c, lane: laneC } };
-            break outer;
-          }
-        }
-      }
-    }
-    expect(chain).not.toBeNull();
-    const { a, b, c } = chain!;
-    // Fill the remaining lanes with cards that have no synergy with the chain.
-    const lineup: Placement[] = LANE_ORDER.map(lane => [a, b, c].find(p => p.lane === lane)
-      ?? { card: CARDS.find(card => card.lanes.includes(lane) && ![a, b, c].some(p => p.card.id === card.id)
-        && !rankSynergyPartners(card.id, lane).some(p => [a, b, c].some(q => q.card.id === p.cardId)))!, lane });
-    const opponent: Placement[] = LANE_ORDER.map(lane => ({ card: CARDS.filter(card => card.lanes.includes(lane)).at(-1)!, lane }));
-    const first = resolveRoundScores(lineup, opponent);
-    const laneB = first.laneResults.find(r => r.lane === b.lane)!;
-    const laneC = first.laneResults.find(r => r.lane === c.lane)!;
-    expect(laneB.p1Synergy.links.map(l => l.card.id)).toContain(a.card.id);
-    // A already gave B its bonus, so it can't boost C in the same round.
-    expect(laneC.p1Synergy.links.map(l => l.card.id)).not.toContain(a.card.id);
-    // As a main card, A is still played and scored normally.
-    expect(first.laneResults.find(r => r.lane === a.lane)!.p1Card.id).toBe(a.card.id);
-    // Next round starts fresh: the same line-up earns the same bonus again.
-    const second = resolveRoundScores(lineup, opponent);
-    expect(second.laneResults.find(r => r.lane === b.lane)!.p1Synergy.links.map(l => l.card.id)).toContain(a.card.id);
-    // Without the once-per-round rule, C would have counted A too.
-    expect(computeLaneSynergy(c.card, c.lane, [a, b]).links.map(l => l.card.id)).toContain(a.card.id);
+  it('derives the red set from resolved lanes for one side only', () => {
+    const real = CARDS.filter(card => card.lanes.includes(Lane.Mid));
+    const link = { card: partners[5], lane: partners[5].lanes[0], edge: 0.3, rank: 1, bonus: 0.05 };
+    const result = resolveLaneDuel(real[0], real[1], Lane.Mid, 0, link, null);
+    expect([...usedSynergyPartners([result], Player.P1)]).toEqual(['t6']);
+    expect([...usedSynergyPartners([result], Player.P2)]).toEqual([]);
   });
 });
