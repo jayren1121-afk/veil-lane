@@ -98,10 +98,10 @@ export class SummaryScene extends Phaser.Scene {
       `P1 ${this.state.p1RoundWins}　－　${this.state.p2RoundWins} P2`, {
         fontSize: '16px', fontFamily: 'Arial', color: COLORS.text, fontStyle: 'bold',
       }).setOrigin(1, 0.5).setDepth(3);
-    this.add.text(150, 88, this.view ? `P1 · ${sideLabel(this.view, Player.P1)}` : 'PLAYER 1', {
+    this.add.text(150, 88, this.view ? `P1 · ${sideLabel(this.view, Player.P1)}` : `P1 · ${t('game.you')}`, {
       fontSize: '16px', fontFamily: 'Arial', color: COLORS.p1, fontStyle: 'bold',
     }).setOrigin(0.5);
-    this.add.text(1050, 88, this.view ? `P2 · ${sideLabel(this.view, Player.P2)}` : 'PLAYER 2', {
+    this.add.text(1050, 88, this.view ? `P2 · ${sideLabel(this.view, Player.P2)}` : `P2 · ${t('game.cpu')}`, {
       fontSize: '16px', fontFamily: 'Arial', color: COLORS.p2, fontStyle: 'bold',
     }).setOrigin(0.5);
 
@@ -278,7 +278,7 @@ export class SummaryScene extends Phaser.Scene {
     const winner = this.result.roundWinner;
     const winnerColor = winner === Player.P1 ? COLORS.p1 : winner === Player.P2 ? COLORS.p2 : COLORS.gold;
     const winnerLabel = this.add.text(600, 735, winner
-      ? t('summary.roundWinner', { player: this.view ? playerName(this.view, winner) : winner })
+      ? t('summary.roundWinner', { player: this.view ? playerName(this.view, winner) : this.localName(winner) })
       : t('summary.roundDraw'), {
       fontSize: '22px', fontFamily: 'Arial', color: winnerColor, fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(40);
@@ -287,7 +287,7 @@ export class SummaryScene extends Phaser.Scene {
     const matchOver = isMatchOver(this.state);
     if (matchOver) {
       const matchWinnerText = this.state.matchWinner
-        ? t('summary.matchWinner', { player: this.view ? playerName(this.view, this.state.matchWinner) : this.state.matchWinner })
+        ? t('summary.matchWinner', { player: this.view ? playerName(this.view, this.state.matchWinner) : this.localName(this.state.matchWinner) })
         : t('summary.matchDraw');
       this.add.text(600, 756,
         t('summary.matchOver', {
@@ -355,5 +355,10 @@ export class SummaryScene extends Phaser.Scene {
 
   private cardKey(player: Player, lane: Lane): string {
     return `${player}:${lane}`;
+  }
+
+  /** vs CPU: P1 is you, P2 is the computer. */
+  private localName(player: Player): string {
+    return player === Player.P1 ? t('game.you') : t('game.cpu');
   }
 }

@@ -9,3 +9,4 @@ export * from './reveal';
 export { getMatchup } from '../data/matchups';
 export { getSynergy } from '../data/synergies';
 export * from './battleTimer';
+export * from './cpu';

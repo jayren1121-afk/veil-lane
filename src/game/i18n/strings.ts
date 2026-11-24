@@ -13,8 +13,8 @@ export const STRINGS = {
     en: "Each round you get a 10-card hand: 2 random cards for each of Top, Jungle, Mid, Bot and Support, visible all round. Lanes are played in order; each lane you play 1 of that lane's 2 cards as your MAIN card.",
   },
   'tutorial.page1.line2': {
-    zh: '接著從手牌其他卡（別路的、出過或沒出過都可以）選 1 張配合卡。每路限時 {seconds} 秒（主卡＋配合一起算），時間到隨機出主卡、自動選加分最高的配合。對手的手牌和選擇翻開前都看不到。',
-    en: "Then pick 1 synergy partner from the rest of your hand (other lanes, played or not). {seconds} seconds per lane covers both picks; on time-out a random main card and the best partner are chosen. Your opponent's hand and picks stay hidden until the flip.",
+    zh: '接著從手牌其他卡（別路的、出過或沒出過都可以）選 1 張配合卡。每路限時 {seconds} 秒（主卡＋配合一起算），時間到隨機出主卡、自動選加分最高的配合。對手（線上玩家或電腦）的手牌和選擇翻開前都看不到。',
+    en: "Then pick 1 synergy partner from the rest of your hand (other lanes, played or not). {seconds} seconds per lane covers both picks; on time-out a random main card and the best partner are chosen. Your opponent's hand and picks (online player or CPU) stay hidden until the flip.",
   },
   'tutorial.page2.title': { zh: '開牌', en: 'REVEAL' },
   'tutorial.page2.line1': {
@@ -102,8 +102,8 @@ export const STRINGS = {
   'game.locked': { zh: '已出牌，等待 {name}…', en: 'LOCKED IN. WAITING FOR {name}…' },
   'game.opponentLocked': { zh: '{name} 已出牌', en: '{name} HAS LOCKED IN' },
   'game.opponentThinking': { zh: '{name} 思考中…', en: '{name} IS CHOOSING…' },
-  'game.handoff': { zh: '換 {player} 出牌，{other} 請別偷看', en: 'PASS TO {player}. {other}, LOOK AWAY' },
-  'game.handoffButton': { zh: '我是 {player}，翻開手牌', en: 'I AM {player}: SHOW MY CARDS' },
+  'game.you': { zh: '你', en: 'YOU' },
+  'game.cpu': { zh: '電腦', en: 'CPU' },
   'game.dueling': { zh: '{lane} 對決中…', en: '{lane} DUELING…' },
   'game.draw': { zh: '平手', en: 'DRAW' },
   'game.laneWinner': { zh: '{lane}：{player} 贏得對線', en: '{lane}: {player} WINS THE LANE' },
@@ -132,7 +132,7 @@ export const STRINGS = {
   'summary.nextRound': { zh: '下一局 ▶', en: 'NEXT ROUND ▶' },
 
   'menu.online': { zh: '線上對戰', en: 'ONLINE BATTLE' },
-  'menu.local': { zh: '單機雙人', en: 'LOCAL 2-PLAYER' },
+  'menu.local': { zh: '對戰電腦', en: 'VS CPU' },
   'menu.signedInAs': { zh: '{name}｜{wins} 勝 {losses} 敗', en: '{name} | {wins}W {losses}L' },
   'menu.guestAs': { zh: '訪客：{name}', en: 'GUEST: {name}' },
   'menu.notSignedIn': { zh: '登入 / 訪客', en: 'SIGN IN / GUEST' },

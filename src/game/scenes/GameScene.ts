@@ -31,6 +31,8 @@ import {
   submitPartnerPick,
   summarizeRound,
   usedSynergyPartners,
+  cpuTakeTurn,
+  cpuThinkDelay,
 } from '../rules';
 import { CARDS, getLaneWinRate } from '../data/cards';
 import { CARD_BACK_KEY, cardArtPath, cardBackPath } from '../data/art';
@@ -69,8 +71,9 @@ const OPP_HAND_Y = -6;
 const OPP_HAND_W = 54;
 const OPP_HAND_H = 72;
 const SIDE_X = 1070;
-/** Hot-seat: if the next player does not tap "show my cards", reveal them anyway after this. */
-const HANDOFF_AUTO_MS = 10000;
+/** Offline mode: you are P1 at the bottom, the computer is P2 at the top. */
+const HUMAN = Player.P1;
+const CPU = Player.P2;
 const FLIP_MS = 700;
 const PARTNER_MS = 1300;
 const USED_PARTNER_RED = '#e0474c';
@@ -105,7 +108,7 @@ interface HandCardView {
  * Lane-by-lane battle. Each round both players hold a 10-card hand (2 cards per lane). Each
  * lane they secretly play one of that lane's two cards as MAIN and choose one synergy partner
  * from the rest of their hand; both mains flip together, the chosen partners fly in with their
- * tier %, and the lane winner is shown. Used for both local hot-seat and online play.
+ * tier %, and the lane winner is shown. Used for both vs-CPU and online play.
  */
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -147,13 +150,14 @@ export class GameScene extends Phaser.Scene {
   /** Board slots (row:lane) whose main card was already used as a synergy partner this round. */
   private usedPartnerSlots = new Set<string>();
 
-  // local hot-seat
+  // vs CPU
   private state!: MatchState;
   private play: RoundPlay | null = null;
   private picker: Player | null = null;
-  private lastPicker: Player | null = null;
+  /** The CPU's own random source (separate from the deal so ?seed=N deals stay repeatable). */
+  private cpuRandom: () => number = Math.random;
+  private cpuLanding = false;
   private localDeadline: number | null = null;
-  private handoffTimer: Phaser.Time.TimerEvent | null = null;
   private needCoin = false;
   private random: () => number = Math.random;
 
@@ -188,9 +192,8 @@ export class GameScene extends Phaser.Scene {
     this.usedPartnerSlots = new Set();
     this.play = null;
     this.picker = null;
-    this.lastPicker = null;
+    this.cpuLanding = false;
     this.localDeadline = null;
-    this.handoffTimer = null;
     this.online = null;
     this.view = null;
     this.leavingOnline = false;
@@ -206,6 +209,7 @@ export class GameScene extends Phaser.Scene {
     this.state = data?.matchState ?? createMatchState(seed);
     this.currentRound = data?.round ?? this.state.currentRound;
     this.random = seed === undefined ? Math.random : seededRandom(seed * 7 + this.currentRound);
+    this.cpuRandom = seed === undefined ? Math.random : seededRandom(seed * 13 + this.currentRound + 1000);
   }
 
   private static urlSeed(): number | undefined {
@@ -257,18 +261,19 @@ export class GameScene extends Phaser.Scene {
       [Player.P1]: this.state.p1UsedCardIds,
       [Player.P2]: this.state.p2UsedCardIds,
     } as Record<Player, Set<string>>, this.random);
-    this.renderHand(this.lead, 'hidden');
+    this.renderHand(HUMAN, 'view');
     if (this.needCoin && this.currentRound === 1) {
-      playCoinFlip(this, this.state.round1FirstPlayer, () => this.nextLocalPick());
+      playCoinFlip(this, this.state.round1FirstPlayer, () => this.startLane(), this.label(this.state.round1FirstPlayer));
     } else {
-      this.nextLocalPick();
+      this.startLane();
     }
   }
 
   // ---------- labels ----------
 
   private label(player: Player): string {
-    return this.view ? sideLabel(this.view, player) : player;
+    if (this.view) return sideLabel(this.view, player);
+    return player === HUMAN ? t('game.you') : t('game.cpu');
   }
 
   private rowOf(player: Player): Row {
@@ -603,10 +608,7 @@ export class GameScene extends Phaser.Scene {
     const topPlayer = otherPlayer(this.bottomPlayer);
     let count: number;
     if (this.play) {
-      // Hot-seat: hide it while the top player holds their own hand face-up at the bottom.
-      count = this.handOwner === topPlayer && this.handMode !== 'hidden'
-        ? 0
-        : 10 - this.play.played[topPlayer].length - (this.play.mains[topPlayer] ? 1 : 0);
+      count = 10 - this.play.played[topPlayer].length - (this.play.mains[topPlayer] ? 1 : 0);
     } else {
       const battle = this.view?.battle;
       count = battle ? 10 - battle.revealed.length - (battle.opponentLocked && battle.currentLane ? 1 : 0) : 0;
@@ -812,9 +814,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** The opponent's face-down card slides from their held cards at the top edge to their lane slot. */
-  private opponentPlays(lane: Lane) {
+  private opponentPlays(lane: Lane, onLanded?: () => void) {
     const row: Row = 'top';
-    if (this.slots.get(this.key(row, lane))?.kind === 'back') return;
+    if (this.slots.get(this.key(row, lane))?.kind === 'back') {
+      onLanded?.();
+      return;
+    }
     const from = this.oppHandObjects.length > 0
       ? this.oppHandObjects[Math.floor(this.oppHandObjects.length / 2)] as Phaser.GameObjects.Container
       : null;
@@ -833,6 +838,7 @@ export class GameScene extends Phaser.Scene {
         back.container.destroy();
         this.setBackSlot(row, lane);
         this.renderOpponentHand();
+        onLanded?.();
       },
     });
   }
@@ -880,56 +886,36 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // ---------- local hot-seat ----------
+  // ---------- vs CPU ----------
 
-  /** Pick order alternates per lane (A,B then B,A) so the device changes hands only once per lane. */
-  private localPickOrder(laneIndex: number): Player[] {
-    const other = otherPlayer(this.lead);
-    return laneIndex % 2 === 0 ? [this.lead, other] : [other, this.lead];
-  }
-
-  private nextLocalPick() {
+  /** Open the current lane: the player picks with the 20s clock while the CPU "thinks". */
+  private startLane() {
     const play = this.play;
     if (!play || this.busy) return;
     const lane = currentPlayLane(play);
     if (!lane) return;
-    const next = this.localPickOrder(play.laneIndex).find(player => !isPlayerReady(play, player)) ?? null;
-    if (!next) return;
-    this.picker = next;
+    this.picker = HUMAN;
+    this.cpuLanding = false;
     this.highlightLane(lane);
-    if (this.lastPicker !== null && this.lastPicker !== next) this.showHandoff(next);
-    else this.startLocalTurn(next);
-  }
-
-  private showHandoff(player: Player) {
-    this.renderHand(player, 'hidden');
-    this.localDeadline = null;
-    this.promptText.setText(t('game.handoff', { player, other: otherPlayer(player) }));
-    this.bonusText.setText('');
-    const button = addButton(this, 530, HAND_Y, 320, 56, 0x1d4a63).setDepth(40);
-    const text = this.add.text(530, HAND_Y, t('game.handoffButton', { player }), {
-      fontSize: '18px', fontFamily: 'Arial', color: COLORS.title, fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(41);
-    this.handObjects.push(button, text);
-    let done = false;
-    const go = () => {
-      if (done) return;
-      done = true;
-      this.handoffTimer?.remove();
-      this.handoffTimer = null;
-      this.startLocalTurn(player);
-    };
-    button.on('pointerdown', go);
-    this.handoffTimer = this.time.delayedCall(HANDOFF_AUTO_MS, go);
-  }
-
-  private startLocalTurn(player: Player) {
-    if (!this.play) return;
-    this.renderHand(player, 'main');
-    this.showPrompt(player);
-    this.statusText.setText('');
+    this.renderHand(HUMAN, 'main');
+    this.showPrompt(HUMAN);
+    this.statusText.setText(t('game.opponentThinking', { name: this.label(CPU) }));
     // One 20s clock covers both the main card and the partner choice.
     this.localDeadline = createTurnDeadline(Date.now());
+    this.time.delayedCall(cpuThinkDelay(this.cpuRandom), () => this.cpuMove(play));
+  }
+
+  /** The CPU locks its main card and partner from its own hand only, then its card slides down face-down. */
+  private cpuMove(play: RoundPlay) {
+    if (play !== this.play || isRoundPlayComplete(play) || isPlayerReady(play, CPU)) return;
+    const lane = currentPlayLane(play)!;
+    if (!cpuTakeTurn(play, CPU, this.cpuRandom)) autoCompletePick(play, CPU, this.cpuRandom);
+    this.cpuLanding = true;
+    if (this.picker === HUMAN) this.statusText.setText(t('game.opponentLocked', { name: this.label(CPU) }));
+    this.opponentPlays(lane, () => {
+      this.cpuLanding = false;
+      this.tryResolveLocal();
+    });
   }
 
   private localChoose(stage: 'main' | 'partner', cardId: string) {
@@ -952,18 +938,15 @@ export class GameScene extends Phaser.Scene {
   private afterLocalMain(player: Player) {
     const play = this.play;
     if (!play) return;
-    {
-      if (!play.partnerDone[player]) {
-        this.renderHand(player, 'partner');
-        this.showPrompt(player);
-        this.statusText.setText('');
-        return;
-      }
-      const partner = play.partners[player];
-      this.statusText.setText(partner
-        ? t('game.autoPartner', { card: cardById(partner)?.name ?? partner })
-        : t('game.noPartner'));
+    if (!play.partnerDone[player]) {
+      this.renderHand(player, 'partner');
+      this.showPrompt(player);
+      return;
     }
+    const partner = play.partners[player];
+    this.statusText.setText(partner
+      ? t('game.autoPartner', { card: cardById(partner)?.name ?? partner })
+      : t('game.noPartner'));
     this.finishLocalTurn(player);
   }
 
@@ -988,19 +971,24 @@ export class GameScene extends Phaser.Scene {
   private finishLocalTurn(player: Player) {
     const play = this.play!;
     this.localDeadline = null;
-    this.lastPicker = player;
     this.picker = null;
-    if (!bothReady(play)) {
-      this.renderHand(player, 'hidden');
-      this.time.delayedCall(350, () => this.nextLocalPick());
-      return;
+    this.renderHand(player, 'view');
+    if (!isPlayerReady(play, CPU)) {
+      this.promptText.setText(t('game.locked', { name: this.label(CPU) }));
+      this.bonusText.setText('');
     }
-    this.renderHand(player, 'hidden');
+    this.tryResolveLocal();
+  }
+
+  /** Once both cards are down (and nothing is still flying), flip the lane. */
+  private tryResolveLocal() {
+    const play = this.play;
+    if (!play || this.busy || this.flying > 0 || this.cpuLanding || this.picker !== null || !bothReady(play)) return;
     const result = resolveCurrentLane(play);
     if (!result) return;
     this.animateLane(result, () => {
       if (isRoundPlayComplete(play)) this.finishLocalRound();
-      else this.nextLocalPick();
+      else this.startLane();
     });
   }
 
@@ -1131,7 +1119,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     const now = Date.now();
-    this.turnTimer.update(this.localDeadline - now, `${this.picker ?? ''} ${t('timer.caption')}`);
+    this.turnTimer.update(this.localDeadline - now, t('online.yourTurnPlay'));
     if (isTurnExpired(this.localDeadline, now)) {
       this.localDeadline = null;
       this.localTimeout();

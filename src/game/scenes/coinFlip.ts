@@ -3,7 +3,7 @@ import { t } from '../i18n';
 import { Player } from '../rules';
 import { COLORS, glowText } from './theme';
 
-export function playCoinFlip(scene: Phaser.Scene, winner: Player, onComplete: () => void): void {
+export function playCoinFlip(scene: Phaser.Scene, winner: Player, onComplete: () => void, winnerLabel: string = winner): void {
   const { width, height } = scene.cameras.main;
   const overlay = scene.add.container(0, 0).setDepth(10000);
   const shade = scene.add.rectangle(width / 2, height / 2, width, height, 0x0a1a2e, 0.94)
@@ -50,7 +50,7 @@ export function playCoinFlip(scene: Phaser.Scene, winner: Player, onComplete: ()
       faceText.setText(winner);
       coin.setScale(1, 1);
       coin.setRotation(0);
-      const result = scene.add.text(width / 2, height / 2 + 128, t('coin.winner', { player: winner }), {
+      const result = scene.add.text(width / 2, height / 2 + 128, t('coin.winner', { player: winnerLabel }), {
         fontSize: '32px', fontFamily: 'Arial', color: COLORS.gold, fontStyle: 'bold',
       }).setOrigin(0.5);
       glowText(result);

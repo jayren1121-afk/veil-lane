@@ -23,18 +23,22 @@ The public Worker for this project is already deployed at
 - **Online battle**: two players on two computers. Create a room (4-character code + invite link `?room=XXXX`) or join one.
   The server (Cloudflare Worker + Durable Object) holds the hidden picks and runs the rules, so neither browser
   ever receives the opponent's unrevealed cards.
-- **Local 2-player**: the original hot-seat mode, no server needed.
+- **vs CPU** (對戰電腦): play the computer offline, no server needed. The CPU gets its own hidden 10-card hand under the
+  same rules (Fearless, red partners, 20 s clock). Each lane it picks the main card with the best expected lane score
+  (lane win rate + best partner %) plus a little random noise, then usually the highest-% partner (sometimes the
+  runner-up). It only looks at its own hand and never at yours (`src/game/rules/cpu.ts`). After a short "thinking"
+  delay its card slides down face-down, then the normal flip and partner pop play.
 - **Accounts**: "Sign in with Google" keeps a nickname and win/loss record. "Play as guest" (nickname only) works
   without any account, so judges can try it instantly.
 - **Battle timer**: each lane has a 20-second countdown per player covering both the main card and the partner pick
   (`BATTLE_TURN_SECONDS` in `src/game/rules/constants.ts`). It turns red for the last 5 seconds; on timeout a random main
-  card of the lane's two is played, then the highest-% partner. Online, the server enforces it with Durable Object alarms. Local mode accepts `?seed=N` for reproducible deals.
+  card of the lane's two is played, then the highest-% partner. Online, the server enforces it with Durable Object alarms. vs CPU mode accepts `?seed=N` for reproducible deals (and CPU choices).
 
 ## Develop
 
 ```bash
 npm install
-npm test                 # vitest (rules, online match, timers, room codes, Google token checks)
+npm test                 # vitest (rules, CPU, online match, timers, room codes, Google token checks)
 npm run dev:worker       # local backend on http://localhost:8787 (wrangler dev, no Cloudflare login needed)
 npm run dev              # game on http://localhost:5173
 npm run smoke:online     # optional: two scripted clients play a full Bo3 against dev:worker (~80 s)
