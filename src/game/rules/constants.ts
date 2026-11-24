@@ -10,13 +10,18 @@ export const WIN_RATE_TIE_EPSILON = 1e-10;
 /** Order bonus by lane order: the earliest-played lane gets +5%, then 4/3/2/1. */
 export const ORDER_BONUS = [5, 4, 3, 2, 1] as const;
 
-/** "Obvious synergy" thresholds from the aggregated pair table. */
-export const SYNERGY_MIN_GAMES = 20;
-export const SYNERGY_MIN_EDGE = 0.08;
 /**
- * Per-lane synergy tiers (percentage points). For the card being played, its obvious synergy
- * partners are ranked by edge: the best pair gives +5%, the next +4%, then +3%, +2%, +1%.
- * Pairs beyond the top five give nothing.
+ * "Obvious synergy" thresholds from the aggregated pair table: a same-team pair counts when it
+ * has at least SYNERGY_MIN_GAMES games together and beats its expected win rate by at least
+ * SYNERGY_MIN_EDGE. Loosened (was 20 games / 0.08) so most main cards have a partner in a
+ * 10-card hand and the "choose one" step comes up regularly.
+ */
+export const SYNERGY_MIN_GAMES = 4;
+export const SYNERGY_MIN_EDGE = 0.06;
+/**
+ * Per-lane synergy tiers (percentage points), by rank. A card's obvious partners are ranked by
+ * edge. With five or fewer, the best gives +5%, the next +4%, then +3%, +2%, +1%. With more,
+ * the ranked list is split into five equal rank bands that give +5/+4/+3/+2/+1%.
  */
 export const SYNERGY_TIER = [5, 4, 3, 2, 1] as const;
 

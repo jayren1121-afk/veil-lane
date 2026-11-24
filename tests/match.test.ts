@@ -8,6 +8,8 @@ import {
   currentOffer,
   currentPlayLane,
   dealHand,
+  eligiblePartners,
+  handToPlacements,
   dealLaneOffer,
   GamePhase,
   getScoreString,
@@ -276,6 +278,27 @@ describe('synergy partner from the whole hand', () => {
     autoCompletePick(open, Player.P1, () => 0.99);
     expect(open.mains[Player.P1]).toBe(lockedMain);
     expect(open.partners[Player.P1]).toBe(partnerOptions(open, Player.P1, lockedMain)[0].card.id);
+  });
+});
+
+describe('synergy frequency', () => {
+  it('most main cards in a dealt hand have a partner, and a good share have 2+ to choose from', () => {
+    let mains = 0;
+    let atLeastOne = 0;
+    let twoOrMore = 0;
+    for (let seed = 1; seed <= 1500; seed++) {
+      const hand = handToPlacements(dealHand([], seeded(seed)));
+      for (const main of hand) {
+        const count = eligiblePartners(main.card, main.lane, hand).length;
+        mains++;
+        if (count >= 1) atLeastOne++;
+        if (count >= 2) twoOrMore++;
+      }
+    }
+    expect(atLeastOne / mains).toBeGreaterThan(0.6);
+    expect(atLeastOne / mains).toBeLessThan(0.8);
+    expect(twoOrMore / mains).toBeGreaterThan(0.25);
+    expect(twoOrMore / mains).toBeLessThan(0.4);
   });
 });
 

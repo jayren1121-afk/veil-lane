@@ -110,7 +110,7 @@ export function playedPlacements(play: RoundPlay, player: Player): Placement[] {
 
 /**
  * Partner options for `mainId` as `player`'s main card in the current lane: other cards of the
- * hand (other lanes, played or not) that are top-five obvious partners and not red. Best first.
+ * hand (other lanes, played or not) that are obvious partners and not red. Best first.
  */
 export function partnerOptions(play: RoundPlay, player: Player, mainId: string): LaneSynergyLink[] {
   const lane = currentPlayLane(play);

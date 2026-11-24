@@ -10,9 +10,14 @@ export function computeSynergyEdge(wins: number, total: number, expectedWinRate:
   return edge >= SYNERGY_MIN_EDGE ? edge : 0;
 }
 
-/** Tier bonus (0-1 scale) for a 1-based synergy rank; 0 beyond the top five. */
-export function synergyTierBonus(rank: number): number {
-  const tier = SYNERGY_TIER[rank - 1];
+/**
+ * Tier bonus (0-1 scale) for a 1-based synergy rank out of `count` obvious partners. Up to five
+ * partners map straight to 5/4/3/2/1; longer lists are split into five equal rank bands.
+ */
+export function synergyTierBonus(rank: number, count: number = SYNERGY_TIER.length): number {
+  if (rank < 1 || rank > count) return 0;
+  const index = count <= SYNERGY_TIER.length ? rank - 1 : Math.floor(((rank - 1) * SYNERGY_TIER.length) / count);
+  const tier = SYNERGY_TIER[index];
   return tier === undefined ? 0 : tier / 100;
 }
 
@@ -48,17 +53,17 @@ function buildRankings(entries: SynergyEntry[], cardById: (id: string) => Card |
   const ranked = new Map<string, RankedPartner[]>();
   for (const [key, list] of lists) {
     list.sort((x, y) => y.edge - x.edge || x.cardId.localeCompare(y.cardId));
-    ranked.set(key, list.slice(0, SYNERGY_TIER.length).map((item, index) => ({
+    ranked.set(key, list.map((item, index) => ({
       ...item,
       rank: index + 1,
-      bonus: synergyTierBonus(index + 1),
+      bonus: synergyTierBonus(index + 1, list.length),
     })));
   }
   return ranked;
 }
 
 /**
- * Top obvious synergy partners of `cardId` when it plays `lane`, best first (max five).
+ * All obvious synergy partners of `cardId` when it plays `lane`, best first, with tier bonuses.
  * Pass `entries` to rank a custom table (tests); otherwise the bundled aggregate is used.
  */
 export function rankSynergyPartners(
@@ -74,8 +79,8 @@ export function rankSynergyPartners(
 
 /**
  * Synergy partners available to `main` played in `lane`: any OTHER card in the player's hand
- * (dealt for a different lane, played or not) that is one of the main card's top-five obvious
- * partners and is not red (already used as a partner this round). Best tier first.
+ * (dealt for a different lane, played or not) that is one of the main card's obvious partners
+ * and is not red (already used as a partner this round). Best tier first.
  */
 export function eligiblePartners(
   main: Card,

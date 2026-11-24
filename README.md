@@ -4,8 +4,10 @@ Hidden-card lane duel built with Vite + TypeScript + Phaser 4 (Cloud9 x JetBrain
 At the start of each round both players are dealt their own 10-card hand: 2 random cards for each lane, visible to them
 all round. Lanes are played in order (Top → Support). Each lane, each player secretly picks one of that lane's two cards as
 the MAIN card, then one synergy partner from the rest of their hand (any other lane, played or not). Per the aggregated
-pro-match synergy table, the main card's best partner gives +5%, then +4/+3/+2/+1% (`SYNERGY_TIER`); eligible partners
-glow gold with their %. Synergy does not stack: with 2+ eligible partners you choose one, with exactly one it is used
+pro-match synergy table, a pair counts as synergy with at least 4 games together and a +6-point edge over its expected
+win rate (`SYNERGY_MIN_GAMES` / `SYNERGY_MIN_EDGE`). A card's partners are ranked by edge and pay +5/+4/+3/+2/+1% by rank
+(`SYNERGY_TIER`; with more than five partners the ranked list is split into five equal bands). Eligible partners glow gold
+with their %. Synergy does not stack: with 2+ eligible partners you choose one, with exactly one it is used
 automatically, with none the step is skipped. A chosen partner turns red for the rest of the round and can't be a partner
 again (it can still be played as the main card in its own lane, with its own partner pick); red resets every round. Both
 main cards go down face-down and flip together, each side's partner flies in, and lane score = matchup win rate + order
