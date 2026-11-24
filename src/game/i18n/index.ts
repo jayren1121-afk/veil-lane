@@ -66,3 +66,20 @@ export function t(key: StringKey, params: Record<string, string | number> = {}):
 }
 
 export { STRINGS } from './strings';
+
+/**
+ * English verbs and possessives change when the subject is "YOU" ("YOU GO FIRST", "YOUR HAND"),
+ * so templates that take a player label have a "you" variant used when the label is the viewer.
+ */
+export const SUBJECT_YOU_VARIANTS: Partial<Record<StringKey, StringKey>> = {
+  'coin.winner': 'coin.winnerYou',
+  'game.laneWinner': 'game.laneWinnerYou',
+  'summary.matchWinner': 'summary.matchWinnerYou',
+  'game.handLabel': 'game.handLabelYou',
+  'summary.synergyBonus': 'summary.synergyBonusYou',
+};
+
+/** Like `t`, but picks the "you" variant of `key` when the subject player is the viewer. */
+export function tSubject(key: StringKey, isYou: boolean, params: Record<string, string | number> = {}): string {
+  return t(isYou ? SUBJECT_YOU_VARIANTS[key] ?? key : key, params);
+}

@@ -33,7 +33,7 @@ import {
 } from '../rules';
 import { CARDS, getLaneWinRate } from '../data/cards';
 import { CARD_BACK_KEY, cardArtPath, cardBackPath } from '../data/art';
-import { t } from '../i18n';
+import { t, tSubject } from '../i18n';
 import { addBackButton, confirmDialog, showOpponentLeft } from './sceneNav';
 import { leaveOnline } from '../../net/onlineClient';
 import { refreshAccount } from '../../net/identity';
@@ -287,7 +287,8 @@ export class GameScene extends Phaser.Scene {
     if (this.online) {
       const view = this.view!;
       if (this.showCoin && view.round === 1 && view.battle!.revealed.length === 0) {
-        playCoinFlip(this, view.round1FirstPlayer, () => undefined);
+        playCoinFlip(this, view.round1FirstPlayer, () => undefined,
+          this.label(view.round1FirstPlayer), this.isYou(view.round1FirstPlayer));
       }
       this.refreshOnline();
       return;
@@ -298,7 +299,8 @@ export class GameScene extends Phaser.Scene {
     } as Record<Player, Set<string>>, this.random);
     this.renderHand(HUMAN, 'view');
     if (this.needCoin && this.currentRound === 1) {
-      playCoinFlip(this, this.state.round1FirstPlayer, () => this.startLane(), this.label(this.state.round1FirstPlayer));
+      playCoinFlip(this, this.state.round1FirstPlayer, () => this.startLane(),
+        this.label(this.state.round1FirstPlayer), this.isYou(this.state.round1FirstPlayer));
     } else {
       this.startLane();
     }
@@ -351,6 +353,11 @@ export class GameScene extends Phaser.Scene {
   private label(player: Player): string {
     if (this.view) return sideLabel(this.view, player);
     return player === HUMAN ? t('game.you') : t('game.cpu');
+  }
+
+  /** Whether `player` is the person at this screen (label "YOU"), for English verb agreement. */
+  private isYou(player: Player): boolean {
+    return this.view ? player === this.view.you : player === HUMAN;
   }
 
   private rowOf(player: Player): Row {
@@ -760,7 +767,7 @@ export class GameScene extends Phaser.Scene {
     const red = this.redOf(player);
     const played = new Set(this.playedOf(player));
     const main = this.mainOf(player);
-    this.handTitle.setText(mode === 'hidden' ? t('game.handHidden') : t('game.handLabel', { player: this.label(player) }));
+    this.handTitle.setText(mode === 'hidden' ? t('game.handHidden') : tSubject('game.handLabel', this.isYou(player), { player: this.label(player) }));
 
     const held: { id: string | null; laneIndex: number }[] = [];
     LANE_ORDER.forEach((_, index) => {
@@ -1381,7 +1388,7 @@ export class GameScene extends Phaser.Scene {
       this.updateHeader();
       const winner = result.laneWinner;
       this.promptText.setText(winner
-        ? t('game.laneWinner', { lane: this.laneName(lane), player: this.label(winner) })
+        ? tSubject('game.laneWinner', this.isYou(winner), { lane: this.laneName(lane), player: this.label(winner) })
         : t('game.laneDraw', { lane: this.laneName(lane) }));
       // 4) Hold the result, then sweep the table clear for the next lane.
       this.time.delayedCall(1300, () => this.sweepTable(() => {
